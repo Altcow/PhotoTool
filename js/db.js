@@ -1,6 +1,6 @@
-// IndexedDB:expenses(帳本)、photos(照片 Blob)、pending(離線排隊的分析請求)
+// IndexedDB:expenses(帳本)、photos(照片 Blob)、pending(離線排隊的分析請求)、files(檔案紀錄)、menus(菜單範本)、rooms(我開過的團)
 const DB_NAME = 'phototool';
-const DB_VER = 1;
+const DB_VER = 2;
 let dbp = null;
 
 function open() {
@@ -12,6 +12,7 @@ function open() {
       if (!db.objectStoreNames.contains('expenses')) db.createObjectStore('expenses', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('photos')) db.createObjectStore('photos', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('pending')) db.createObjectStore('pending', { keyPath: 'id' });
+      ['files', 'menus', 'rooms'].forEach(n => { if (!db.objectStoreNames.contains(n)) db.createObjectStore(n, { keyPath: n === 'rooms' ? 'code' : 'id' }); });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -49,3 +50,19 @@ export const deletePhoto = id => tx('photos', 'readwrite', s => s.delete(id));
 export const addPending = rec => tx('pending', 'readwrite', s => s.put(rec));
 export const allPending = () => tx('pending', 'readonly', s => s.getAll());
 export const deletePending = id => tx('pending', 'readwrite', s => s.delete(id));
+
+export const allFiles = () => tx('files', 'readonly', s => s.getAll());
+export const getFile = id => tx('files', 'readonly', s => s.get(id));
+export const putFile = rec => tx('files', 'readwrite', s => s.put(rec));
+export const deleteFile = id => tx('files', 'readwrite', s => s.delete(id));
+
+export const allMenus = () => tx('menus', 'readonly', s => s.getAll());
+export const getMenu = id => tx('menus', 'readonly', s => s.get(id));
+export const putMenu = rec => tx('menus', 'readwrite', s => s.put(rec));
+export const deleteMenu = id => tx('menus', 'readwrite', s => s.delete(id));
+
+// 我開過的團(含發起人密鑰 hostToken,只存本機)
+export const allRooms = () => tx('rooms', 'readonly', s => s.getAll());
+export const getRoom = code => tx('rooms', 'readonly', s => s.get(code));
+export const putRoom = rec => tx('rooms', 'readwrite', s => s.put(rec));
+export const deleteRoom = code => tx('rooms', 'readwrite', s => s.delete(code));

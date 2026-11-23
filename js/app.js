@@ -1,7 +1,14 @@
 import * as DB from './db.js';
 import * as AI from './ai.js';
+import * as Files from './ui_files.js';
+import * as MenuUI from './ui_menu.js';
+import { openRoomJoin } from './ui_room.js';
+import { parseRoomParams, getNet } from './netctx.js';
+import { validDbUrl } from './net.js';
 
-const { Split, Aggregate, Reconcile } = window;
+const { Split, Aggregate, Reconcile, Xlsx } = window;
+const MAX_FILE = 20 * 1024 * 1024;
+const MAX_FILE_BYTES = MAX_FILE;
 
 /* ---------- 小工具 ---------- */
 const DEFAULT_CATS = ['餐飲', '超市/日用', '交通', '購物', '醫療', '娛樂', '居家', '教育', '其他'];
@@ -62,8 +69,11 @@ function mdToHtml(text) {
 function getSettings() {
   let s = {};
   try { s = JSON.parse(localStorage.getItem('pt_settings') || '{}'); } catch (_) { s = {}; }
-  return Object.assign({ apiKey: '', proxyUrl: '', model: 'claude-sonnet-5-5', classifyModel: 'claude-haiku-5-5', locationEnabled: true, myName: '我', categories: DEFAULT_CATS.slice() }, s);
+  return Object.assign({ apiKey: '', proxyUrl: '', model: 'claude-sonnet-5-5', classifyModel: 'claude-haiku-5-5', locationEnabled: true, dbUrl: '', useMock: false, myName: '我', categories: DEFAULT_CATS.slice() }, s);
 }
+const hasAiKey = s => !!((s.apiKey || '').trim() || (s.proxyUrl || '').trim());
+// AI 分析是否啟用:未明確設定時,有金鑰/中轉就開、沒有就關
+const aiOn = s => (s.aiEnabled === undefined || s.aiEnabled === null ? hasAiKey(s) : !!s.aiEnabled);
 function saveSettings(s) { localStorage.setItem('pt_settings', JSON.stringify(s)); }
 
 /* ---------- 全螢幕頁面堆疊 ---------- */
@@ -95,6 +105,8 @@ function refreshTop() { const t = stack[stack.length - 1]; if (t && t.refresh) t
 const mainEl = $('#main');
 
 /* ---------- 圖片縮放 ---------- */
+const isPdf = b => b && b.type === 'application/pdf';
+const thumbImg = (b, alt, url) => isPdf(b) ? el('div', { class: 'pdf-tile', 'aria-label': 'PDF 檔' }, 'PDF') : el('img', { src: url || URL.createObjectURL(b), alt });
 async function resizeImage(file) {
   let bmp;
   try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
@@ -130,7 +142,7 @@ function captureLocation() {
   if (!getSettings().locationEnabled || compose.location || compose.locPending) return;
   compose.locPending = getLocation().then(l => { compose.location = l; compose.locPending = null; });
 }
-const cam = { stream: null, facing: 'environment', video: null, fallback: false, starting: false };
+const cam = { stream: null, facing: 'environment', video: null, fallback: false, starting: false, suppress: false };
 const home = {};
 
 function renderHome() {
@@ -139,7 +151,10 @@ function renderHome() {
     if (fromCam) captureLocation();
     const files = Array.from(ev.target.files || []).slice(0, 4 - compose.blobs.length);
     ev.target.value = '';
-    for (const f of files) { try { compose.blobs.push(await resizeImage(f)); } catch (e) { alert('讀取圖片失敗'); } }
+    for (const f of files) {
+      if (f.size > MAX_FILE) { alert('檔案「' + f.name + '」超過 20MB,請換小一點的檔案或分次處理。'); continue; }
+      try { compose.blobs.push(f.type === 'application/pdf' ? f : await resizeImage(f)); } catch (e) { alert('讀取檔案失敗'); }
+    }
     homeRefresh();
   };
   home.video = el('video', { class: 'cam-video', playsinline: true, muted: true, autoplay: true });
@@ -156,12 +171,14 @@ function renderHome() {
   mainEl.append(el('div', { class: 'cam' },
     home.video, home.fallbackBox, home.flash,
     el('div', { class: 'cam-top' }, home.pendingChip, el('div', { class: 'grow' }),
+      el('button', { class: 'cam-btn', id: 'btnOrder', 'aria-label': '開團點餐', onclick: () => MenuUI.openOrderHub() }, '🍹'),
+      el('button', { class: 'cam-btn', id: 'btnFiles', 'aria-label': '檔案', onclick: () => Files.openFiles() }, '📁'),
       el('button', { class: 'cam-btn', id: 'btnLedger', 'aria-label': '記帳本', onclick: openLedger }, '📒'),
       el('button', { class: 'cam-btn', id: 'btnSettings', 'aria-label': '設定', onclick: openSettings }, '⚙️')),
     el('div', { class: 'cam-bottom' },
       home.thumbs,
       el('div', { class: 'cam-ctl' },
-        el('label', { class: 'cam-btn', 'aria-label': '從相簿選' }, '🖼', el('input', { type: 'file', accept: 'image/*', multiple: true, class: 'hidden', id: 'inpAlbum', onchange: ev => addFiles(ev, false) })),
+        el('label', { class: 'cam-btn', 'aria-label': '從相簿選' }, '🖼', el('input', { type: 'file', accept: 'image/*,application/pdf', multiple: true, class: 'hidden', id: 'inpAlbum', onchange: ev => addFiles(ev, false) })),
         home.shutter, home.flip),
       home.done)));
   homeRefresh();
@@ -172,7 +189,7 @@ async function homeRefresh() {
   if (!home.thumbs) return;
   const n = compose.blobs.length;
   home.thumbs.replaceChildren(...compose.blobs.map((b, i) => el('div', { class: 'thumb' },
-    el('img', { src: URL.createObjectURL(b), alt: '照片' + (i + 1) }),
+    thumbImg(b, '照片' + (i + 1)),
     el('button', { 'aria-label': '移除照片', onclick: () => { compose.blobs.splice(i, 1); homeRefresh(); } }, '×'))));
   home.done.classList.toggle('hidden', n === 0);
   home.done.textContent = '完成(' + n + ' 張)';
@@ -195,7 +212,7 @@ function showCamFallback(reason) {
 }
 
 async function startCamera() {
-  if (!home.video || cam.starting) return;
+  if (!home.video || cam.starting || cam.suppress || stack.length) return;
   cam.starting = true;
   stopCamera();
   try {
@@ -233,7 +250,7 @@ async function shoot() {
 
 function onScreensChange() {
   if (stack.length) stopCamera();
-  else { homeRefresh(); startCamera(); }
+  else { cam.suppress = false; homeRefresh(); startCamera(); }
 }
 
 async function processPending(p) {
@@ -243,20 +260,24 @@ async function processPending(p) {
 }
 
 /* ---------- 2. 分類結果 + 動作選單 ---------- */
-const KIND_LABEL = { receipt: '收據', menu: '菜單', bill_list: '帳單/明細', text_doc: '文件/文字', plant: '植物', object: '物品', screenshot: '螢幕截圖', other: '其他' };
+const KIND_LABEL = { receipt: '收據', menu: '菜單', bill_list: '帳單/明細', table: '表格', form: '表單', text_doc: '文件/文字', plant: '植物', object: '物品', screenshot: '螢幕截圖', other: '其他' };
 const ACTIONS = [
   { id: 'expense', icon: '🧾', label: '記帳', desc: '讀取收據,核對後記入記帳本' },
   { id: 'split', icon: '👥', label: '分帳/結帳', desc: '誰點什麼、服務費,算出每人應付' },
   { id: 'calc', icon: '🧮', label: '計算', desc: '抽出照片中的數字,由程式加減乘除' },
   { id: 'translate', icon: '🌐', label: '翻譯', desc: '翻譯照片上的文字' },
+  { id: 'excel', icon: '📊', label: '轉 Excel', desc: '把表格/表單/明細轉成可編輯的 Excel 檔' },
+  { id: 'menu', icon: '🍹', label: '做成點餐菜單', desc: '讀取菜單,存成範本並可開團讓大家點餐' },
   { id: 'lookup', icon: '🔍', label: '查資料', desc: '辨識物件/植物等並給詳細資料' },
   { id: 'other', icon: '💬', label: '其他', desc: '自由輸入或口述你的問題' },
 ];
 const KIND_ACTIONS = {
-  receipt: ['expense', 'split', 'calc'], menu: ['translate', 'lookup', 'calc'], bill_list: ['split', 'expense', 'calc'],
-  text_doc: ['translate', 'calc'], plant: ['lookup'], object: ['lookup', 'other'], screenshot: ['other', 'translate'], other: ['other'],
+  receipt: ['expense', 'split', 'calc'], menu: ['menu', 'translate', 'lookup', 'calc'], bill_list: ['split', 'expense', 'excel', 'calc'],
+  table: ['excel', 'calc'], form: ['excel', 'calc'],
+  text_doc: ['translate', 'excel', 'calc'], plant: ['lookup'], object: ['lookup', 'other'], screenshot: ['other', 'translate'], other: ['other'],
 };
-const ACTION_ALIAS = { record: 'expense', record_expense: 'expense', expense: 'expense', split: 'split', split_bill: 'split', checkout: 'split', calc: 'calc', calculate: 'calc', translate: 'translate', lookup: 'lookup', search: 'lookup', identify: 'lookup', other: 'other' };
+const ACTION_ALIAS = { record: 'expense', record_expense: 'expense', expense: 'expense', split: 'split', split_bill: 'split', checkout: 'split', calc: 'calc', calculate: 'calc', translate: 'translate', excel: 'excel', xlsx: 'excel', table: 'excel', menu: 'menu', lookup: 'lookup', search: 'lookup', identify: 'lookup', other: 'other' };
+const AI_ONLY = ['translate', 'lookup', 'other'];
 const LANGS = ['繁體中文', '简体中文', 'English', '日本語', '한국어', 'Français', 'Español'];
 
 function openActions() {
@@ -264,42 +285,52 @@ function openActions() {
   if (!blobs.length) return;
   let used = false;
   const settings = getSettings();
+  const ai = aiOn(settings);
   pushScreen('要做什麼?', body => {
     const statusBox = el('div', { class: 'card', id: 'classifyBox' }, el('span', { class: 'spin' }), ' 正在判斷照片內容…');
     const list = el('div', { id: 'actionList' });
     const text = el('textarea', { id: 'actText', placeholder: '想問什麼?點鍵盤上的麥克風可語音輸入(選填)' });
+    const multi = el('select', { id: 'actMulti', 'aria-label': '多張/多頁的處理方式' },
+      el('option', { value: 'merge' }, '合併成同一個工作表(同一表單的多頁)'), el('option', { value: 'each' }, '每張/每個檔案一個工作表'));
     const lang = el('select', { id: 'actLang', 'aria-label': '翻譯目標語言' }, LANGS.map(l => el('option', { value: l }, l)));
-    body.append(
-      el('div', { class: 'thumbs' }, blobs.map(b => el('div', { class: 'thumb' }, el('img', { src: URL.createObjectURL(b), alt: '照片' })))),
+    body.append(el('div', { class: 'two-col act-cols' }, el('div', {},
+      el('div', { class: 'thumbs' }, blobs.map(b => el('div', { class: 'thumb' }, thumbImg(b, '照片')))),
       statusBox, el('label', { class: 'f' }, '補充說明(選填)'), text,
       el('label', { class: 'f' }, '翻譯目標語言(選翻譯時使用)'), lang,
-      el('h3', {}, '要拿這張照片做什麼?'), list);
+      ...(blobs.length > 1 ? [el('label', { class: 'f' }, '多張照片轉 Excel 時'), multi] : [])),
+      el('div', {}, el('h3', {}, '要拿這張照片做什麼?'), list)));
 
     const drawActions = recommended => {
       const rec = recommended.filter((a, i) => recommended.indexOf(a) === i);
       const order = rec.concat(ACTIONS.map(a => a.id).filter(id => !rec.includes(id)));
       list.replaceChildren(...order.map(id => {
         const a = ACTIONS.find(x => x.id === id);
-        return el('button', { class: 'act-btn' + (rec.includes(id) ? ' rec' : ''), 'data-action': id, onclick: async () => {
-          const hint = id === 'translate' ? '(請翻譯成' + lang.value + ')' : '';
+        const aiOnly = !ai && AI_ONLY.includes(id);
+        const manual = () => { if (compose.locPending) return compose.locPending.then(() => manualFlow(id, blobs, compose.location, () => { used = true; })); return manualFlow(id, blobs, compose.location, () => { used = true; }); };
+        return el('button', { class: 'act-btn' + (rec.includes(id) ? ' rec' : '') + (aiOnly ? ' dis' : ''), 'data-action': id, disabled: aiOnly, onclick: async () => {
+          if (!ai) { await manual(); return; }
+          if (id === 'menu') { MenuUI.openMenuBuilder(blobs, { auto: true }); return; }
+          let hint = id === 'translate' ? '(請翻譯成' + lang.value + ')' : '';
+          if (id === 'excel' && blobs.length > 1) hint = multi.value === 'each' ? '(共 ' + blobs.length + ' 份檔案,請每份各一個工作表,sheets 依序對應)' : '(共 ' + blobs.length + ' 份檔案是同一表單的多頁,請合併成同一個工作表依序續接,只保留一份表頭)';
           if (compose.locPending) await compose.locPending;
           const ok = await openChat({ blobs, text: text.value.trim(), mode: id, hint, location: compose.location });
           if (ok) used = true;
         } }, el('span', { class: 'act-ico' }, a.icon),
-        el('span', { class: 'grow' }, el('b', {}, a.label), el('span', { class: 'muted small', style: 'display:block' }, a.desc)),
+        el('span', { class: 'grow' }, el('b', {}, a.label), el('span', { class: 'muted small', style: 'display:block' }, aiOnly ? '需要 AI 分析(設定頁可開啟)' : a.desc)),
         rec.includes(id) ? el('span', { class: 'tag' }, '推薦') : null);
       }));
     };
     drawActions([]);
 
     (async () => {
+      if (!ai) { statusBox.textContent = 'AI 分析未啟用:請直接選動作,用手動方式完成。'; return; }
       if (!navigator.onLine) { statusBox.textContent = '目前離線,略過自動分類,請直接選動作(送出後會排入待處理)。'; return; }
       try {
         const r = await AI.classifyPhotos(settings, blobs);
         const kind = KIND_LABEL[r.kind] ? r.kind : 'other';
         const sug = (r.suggested_actions || []).map(a => ACTION_ALIAS[a]).filter(Boolean);
-        statusBox.replaceChildren(el('div', {}, '這看起來是:', el('b', {}, KIND_LABEL[kind])), r.summary ? el('div', { class: 'muted' }, r.summary) : null,
-          r.detected && r.detected.numbers && r.detected.numbers.length ? el('div', { class: 'muted small' }, '偵測到數字:' + r.detected.numbers.slice(0, 8).join('、')) : null);
+        statusBox.replaceChildren(...[el('div', {}, '這看起來是:', el('b', {}, KIND_LABEL[kind])), r.summary ? el('div', { class: 'muted' }, r.summary) : null,
+          r.detected && r.detected.numbers && r.detected.numbers.length ? el('div', { class: 'muted small' }, '偵測到數字:' + r.detected.numbers.slice(0, 8).join('、')) : null].filter(Boolean));
         statusBox.dataset.kind = kind;
         drawActions(sug.concat(KIND_ACTIONS[kind] || []));
       } catch (e) {
@@ -317,7 +348,7 @@ function openChat(init) {
     const urls = init.blobs.map(b => URL.createObjectURL(b));
     let log, input, sendBtn;
 
-    const activeCard = () => { for (let i = chat.items.length - 1; i >= 0; i--) if (['record', 'split', 'calc'].includes(chat.items[i].k)) return chat.items[i]; return null; };
+    const activeCard = () => { for (let i = chat.items.length - 1; i >= 0; i--) if (['record', 'split', 'calc', 'table'].includes(chat.items[i].k)) return chat.items[i]; return null; };
 
     function render(keep) {
       const st = log.scrollTop;
@@ -326,7 +357,7 @@ function openChat(init) {
       chat.items.forEach(it => {
         if (it.k === 'user') {
           log.append(el('div', { class: 'bubble user' },
-            it.first && urls.length ? el('div', { class: 'thumbs' }, urls.map(u => el('div', { class: 'thumb' }, el('img', { src: u, alt: '照片' })))) : null,
+            it.first && urls.length ? el('div', { class: 'thumbs' }, urls.map((u, i) => el('div', { class: 'thumb' }, thumbImg(init.blobs[i], '照片', u)))) : null,
             it.text));
         } else if (it.k === 'answer') {
           const d = el('div', { class: 'bubble ai' }); d.innerHTML = mdToHtml(it.text); log.append(d);
@@ -336,6 +367,8 @@ function openChat(init) {
           log.append(it === act ? recordCard(it.draft, chat, rerender, send) : el('div', { class: 'bubble ai muted' }, '(記帳草稿已被新版本取代)'));
         } else if (it.k === 'calc') {
           log.append(it === act ? calcCard(it) : el('div', { class: 'bubble ai muted' }, '(計算結果已被新版本取代)'));
+        } else if (it.k === 'table') {
+          log.append(it === act ? tableCard(it, rerender) : el('div', { class: 'bubble ai muted' }, '(表格已被新版本取代)'));
         } else if (it.k === 'split') {
           log.append(it === act ? splitCard(it, chat, rerender) : el('div', { class: 'bubble ai muted' }, '(分帳結果已被新版本取代)'));
         }
@@ -353,10 +386,11 @@ function openChat(init) {
       if (chat.lastToolIds.length) chat.lastToolIds.forEach(id => content.push({ type: 'tool_result', tool_use_id: id, content: 'ok' }));
       let userText = text;
       if (first) {
-        for (const b of init.blobs) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await AI.blobToBase64(b) } });
+        for (const b of init.blobs) content.push(await AI.fileBlock(b));
         userText = (AI.MODE_HINTS[init.mode] || '') + (init.hint || '') + (text || '請分析這些照片');
       } else {
         const a = activeCard();
+        if (a && a.k === 'table') userText += '\n\n(目前表格:' + JSON.stringify(tableToJson(a)) + ')';
         if (a && a.k === 'record' && !a.draft.saved) userText += '\n\n(目前記帳草稿:' + JSON.stringify(a.draft.data) + ')';
       }
       content.push({ type: 'text', text: userText });
@@ -373,7 +407,7 @@ function openChat(init) {
       if (!opts.silent) chat.items.push({ k: 'user', text: text || '(僅照片)', first });
       chat.busy = true; render();
       try {
-        const resp = await AI.callModel(settings, chat.apiMessages, AI.buildSystem(today(), settings.categories));
+        const resp = await AI.callModel(settings, chat.apiMessages, AI.buildSystem(today(), settings.categories), init.mode === 'excel' || init.mode === 'menu' ? { max_tokens: 8000 } : {});
         const blocks = (resp.content || []).filter(b => b.type === 'tool_use' || b.type === 'text');
         chat.apiMessages.push({ role: 'assistant', content: blocks });
         chat.lastToolIds = blocks.filter(b => b.type === 'tool_use').map(b => b.id);
@@ -407,6 +441,7 @@ function openChat(init) {
       if (tu.name === 'answer') chat.items.push({ k: 'answer', text: inp.text || '' });
       else if (tu.name === 'record_expense') chat.items.push({ k: 'record', draft: makeDraft(inp, settings) });
       else if (tu.name === 'split_bill') chat.items.push(makeSplit(inp));
+      else if (tu.name === 'extract_table') { const tb = makeTable(inp); tb.photos = chat.photoBlobs; tb.location = chat.location; chat.items.push(tb); }
       else if (tu.name === 'calc_numbers') chat.items.push(makeCalc(inp));
       else chat.items.push({ k: 'answer', text: JSON.stringify(inp, null, 2) });
     }
@@ -669,6 +704,224 @@ function calcCard(it) {
 }
 
 /* ---------- 2. 記帳本 ---------- */
+/* ---------- 手動入口(AI 分析關閉或沒有金鑰時) ---------- */
+function photoStrip(blobs) {
+  return el('div', { class: 'thumbs', id: 'refPhotos' }, blobs.map(b => el('div', { class: 'thumb ref' }, thumbImg(b, '參考照片'))));
+}
+function manualFlow(id, blobs, loc, onDone) {
+  if (id === 'expense') return openExpenseForm(null, { photos: blobs, location: loc, onSaved: onDone });
+  if (id === 'split') return openManualSplit(blobs, loc, onDone);
+  if (id === 'calc') return openManualCalc(blobs);
+  if (id === 'excel') return openManualTable(blobs, loc);
+  if (id === 'menu') return MenuUI.openMenuBuilder(blobs);
+}
+
+function openManualCalc(blobs) {
+  pushScreen('計算', body => {
+    const it = makeCalc({ numbers: [], op: 'sum' });
+    const box = el('div');
+    const draw = () => box.replaceChildren(calcCard(it));
+    const ta = el('textarea', { id: 'calcPaste', placeholder: '輸入或貼上數字,以空白、逗號、換行分隔', rows: 3 });
+    const add = () => {
+      const toks = [].concat(...ta.value.split(/[\s、;;]+/).filter(Boolean).map(t => (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t) ? [t] : t.split(/[,,]+/)))).filter(Boolean);
+      let bad = 0;
+      toks.forEach(t => { const v = Reconcile.parseAmount(t); if (v === null) bad++; else it.nums.push({ label: '', value: v, on: true }); });
+      ta.value = bad ? toks.filter(t => Reconcile.parseAmount(t) === null).join(' ') : '';
+      if (bad) alert(bad + ' 個項目不是數字,已留在輸入框');
+      draw();
+    };
+    body.append(photoStrip(blobs), el('label', { class: 'f' }, '數字'), ta,
+      el('button', { class: 'btn primary', id: 'calcAdd', onclick: add }, '加入'), box);
+    draw();
+  });
+}
+
+function openManualSplit(blobs, loc, onDone) {
+  pushScreen('分帳/結帳', body => {
+    const st = { people: [], items: [{ name: '', amount: '', who: new Set() }], feePct: '', total: '' };
+    const peopleIn = el('input', { type: 'text', id: 'spPeople', placeholder: '人名,用空白或逗號分隔(例:小明 小華 阿姨)' });
+    const itemsBox = el('div'), resBox = el('div', { id: 'spResult' });
+    const feeIn = el('input', { type: 'number', id: 'spFee', inputmode: 'decimal', step: 'any', placeholder: '服務費 %(例:10,選填)', oninput: e => { st.feePct = e.target.value; } });
+    const totIn = el('input', { type: 'number', id: 'spTotal', inputmode: 'decimal', step: 'any', placeholder: '收據總額(選填,供核對)', oninput: e => { st.total = e.target.value; } });
+    const readPeople = () => { st.people = peopleIn.value.split(/[\s,、,]+/).map(x => x.trim()).filter((x, i, a) => x && a.indexOf(x) === i); st.items.forEach(i => { i.who.forEach(w => { if (!st.people.includes(w)) i.who.delete(w); }); }); drawItems(); };
+    peopleIn.addEventListener('change', readPeople);
+    const drawItems = () => {
+      itemsBox.replaceChildren(...st.items.map((it, idx) => el('div', { class: 'card sp-item' },
+        el('div', { class: 'row' },
+          el('input', { type: 'text', class: 'grow', placeholder: '品名', value: it.name, 'aria-label': '品名', oninput: e => { it.name = e.target.value; } }),
+          el('input', { type: 'number', inputmode: 'decimal', step: 'any', style: 'width:90px', placeholder: '金額', value: it.amount, 'aria-label': '金額', oninput: e => { it.amount = e.target.value; } }),
+          el('button', { class: 'btn sm', 'aria-label': '刪除品項', onclick: () => { st.items.splice(idx, 1); if (!st.items.length) st.items.push({ name: '', amount: '', who: new Set() }); drawItems(); } }, '×')),
+        st.people.length ? el('div', { class: 'chips' }, st.people.map(p => el('button', { class: 'chip' + (it.who.has(p) ? ' on' : ''), 'data-who': p, onclick: () => { if (it.who.has(p)) it.who.delete(p); else it.who.add(p); drawItems(); } }, p)),
+          el('span', { class: 'muted small' }, it.who.size ? '' : '(不選=全部人均分)')) : null)));
+    };
+    drawItems();
+    const calcBtn = el('button', { class: 'btn primary block', id: 'spCalc', onclick: () => {
+      readPeople();
+      if (!st.people.length) { alert('請先輸入人名'); return; }
+      const items = st.items.filter(i => i.name.trim() || String(i.amount).trim() !== '');
+      if (!items.length) { alert('請輸入品項與金額'); return; }
+      const amt = items.map(i => Reconcile.parseAmount(i.amount));
+      if (amt.some(a => a === null)) { alert('有品項的金額不是數字'); return; }
+      const inp = {
+        items: items.map((i, k) => ({ name: i.name.trim() || '品項' + (k + 1), qty: 1, amount: amt[k] })), people: st.people,
+        assignments: items.map((i, k) => { const w = [...i.who]; return { item_index: k, people: w.length ? w : st.people, mode: w.length === 1 ? 'individual' : 'equal' }; }),
+        extra_fees: Number(st.feePct) > 0 ? [{ name: '服務費 ' + st.feePct + '%', percent: Number(st.feePct), allocate: 'proportional' }] : [],
+      };
+      if (st.total !== '' && Reconcile.parseAmount(st.total) !== null) inp.receipt_total = Reconcile.parseAmount(st.total);
+      const sp = makeSplit(inp);
+      const chat = { photoBlobs: blobs, location: loc };
+      const draw = () => { resBox.replaceChildren(splitCard(sp, chat, draw)); if (sp.saved) onDone(); };
+      draw();
+      resBox.scrollIntoView();
+    } }, '算出每人應付');
+    body.append(photoStrip(blobs), el('label', { class: 'f' }, '人名'), peopleIn, el('label', { class: 'f' }, '品項與誰吃(點人名選擇)'), itemsBox,
+      el('button', { class: 'btn sm', id: 'spAddItem', onclick: () => { st.items.push({ name: '', amount: '', who: new Set() }); drawItems(); } }, '＋ 品項'),
+      el('label', { class: 'f' }, '服務費'), feeIn, el('label', { class: 'f' }, '收據總額'), totIn, calcBtn, resBox);
+  });
+}
+
+function parsePasted(text) {
+  const lines = String(text).replace(/\r/g, '').split('\n').filter(l => l.trim() !== '');
+  const hasTab = lines.some(l => l.includes('\t'));
+  const split = l => {
+    if (hasTab) return l.split('\t');
+    const out = []; let cur = '', q = false;
+    for (let i = 0; i < l.length; i++) {
+      const ch = l[i];
+      if (q) { if (ch === '"') { if (l[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+      else if (ch === '"' && !cur) q = true;
+      else if (ch === ',' || ch === ',') { out.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    out.push(cur); return out;
+  };
+  return lines.map(split);
+}
+
+function openManualTable(blobs, loc) {
+  pushScreen('轉 Excel', body => {
+    const it = makeTable({ title: '', sheets: [{ name: '工作表1', columns: ['欄1', '欄2', '欄3'], rows: [['', '', ''], ['', '', ''], ['', '', '']] }] });
+    it.photos = blobs.slice(); it.location = loc || null;
+    const box = el('div');
+    const draw = () => box.replaceChildren(tableCard(it, draw, true));
+    const ta = el('textarea', { id: 'tblPaste', rows: 4, placeholder: '貼上從 Excel/網頁複製的內容(以 Tab 分隔),或 CSV 文字' });
+    const head = el('input', { type: 'checkbox', id: 'tblPasteHead', checked: true, style: 'width:22px;height:22px' });
+    const paste = el('button', { class: 'btn primary', id: 'tblPasteBtn', onclick: () => {
+      const grid = parsePasted(ta.value);
+      if (!grid.length) { alert('沒有可貼入的內容'); return; }
+      const n = Math.max(...grid.map(r => r.length));
+      grid.forEach(r => { while (r.length < n) r.push(''); });
+      const sh = it.sheets[0];
+      if (head.checked) { sh.columns = grid[0].slice(); sh.rows = grid.slice(1); } else { sh.columns = []; sh.rows = grid; }
+      sh.hbad = sh.columns.map(() => ''); sh.bad = sh.rows.map(r => r.map(() => ''));
+      it.active = 0; ta.value = ''; draw();
+    } }, '貼入表格(會取代目前內容)');
+    body.append(photoStrip(blobs), el('label', { class: 'f' }, '貼上文字'), ta,
+      el('label', { class: 'row', style: 'margin:6px 0' }, head, '第一列是表頭'), paste, box);
+    draw();
+  });
+}
+
+/* ---------- 轉 Excel:可編輯表格 ---------- */
+const cellStr = v => (v == null ? '' : String(v));
+function makeTable(inp) {
+  const sheets = (Array.isArray(inp.sheets) ? inp.sheets : []).map((s, i) => {
+    const columns = (Array.isArray(s.columns) ? s.columns : []).map(cellStr);
+    const rows = (Array.isArray(s.rows) ? s.rows : []).map(r => (Array.isArray(r) ? r : [r]).map(cellStr));
+    const ncol = Math.max(columns.length, ...rows.map(r => r.length), 0);
+    if (columns.length) while (columns.length < ncol) columns.push('');
+    rows.forEach(r => { while (r.length < ncol) r.push(''); });
+    return { name: cellStr(s.name) || ('工作表' + (i + 1)), columns, rows, notes: cellStr(s.notes), bad: rows.map(r => r.map(() => '')), hbad: columns.map(() => '') };
+  });
+  if (!sheets.length) sheets.push({ name: '工作表1', columns: [], rows: [], notes: '', bad: [], hbad: [] });
+  const lost = [];
+  (Array.isArray(inp.unreadable) ? inp.unreadable : []).forEach(u => {
+    if (!u) return;
+    const sh = sheets.find(s => s.name === u.sheet) || (Number.isInteger(u.sheet) ? sheets[u.sheet - 1] : null) || sheets[0];
+    const r = Number(u.row), c = Number(u.col) - 1, why = cellStr(u.reason) || '讀不清楚';
+    if (r === 0 && sh.hbad[c] !== undefined) sh.hbad[c] = why;
+    else if (r >= 1 && sh.bad[r - 1] && sh.bad[r - 1][c] !== undefined) sh.bad[r - 1][c] = why;
+    else lost.push('(' + sh.name + ' 第 ' + u.row + ' 列第 ' + u.col + ' 欄)' + why);
+  });
+  return { k: 'table', title: cellStr(inp.title), sheets, active: 0, lost };
+}
+function tableToJson(it) { return { title: it.title, sheets: it.sheets.map(s => ({ name: s.name, columns: s.columns, rows: s.rows, notes: s.notes })) }; }
+function fileBase(it) { return (it.title || 'table').replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').trim().slice(0, 60) || 'table'; }
+function anchorDownload(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+// iPhone:優先系統分享(可存到檔案/Excel);不支援就一般下載
+function saveBlob(blob, name) {
+  try {
+    const file = new File([blob], name, { type: blob.type });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file], title: name }).catch(e => { if (e && e.name !== 'AbortError') anchorDownload(blob, name); });
+      return;
+    }
+  } catch (_) { /* 改用下載 */ }
+  anchorDownload(blob, name);
+}
+function tableCard(it, rerender, manual) {
+  const sh = it.sheets[it.active] || it.sheets[0];
+  const card = el('div', { class: 'card', id: 'tableCard' }, el('h2', {}, '表格結果'));
+  card.append(el('input', { id: 'tblTitle', value: it.title, placeholder: '標題(檔名)', 'aria-label': '標題', oninput: e => { it.title = e.target.value; } }));
+  if (it.sheets.length > 1) card.append(el('div', { class: 'sheet-tabs' }, it.sheets.map((s, i) => el('button', { class: 'btn sm' + (i === it.active ? ' primary' : ''), 'data-sheet': i, onclick: () => { it.active = i; rerender(); } }, s.name))));
+  card.append(el('label', { class: 'f' }, '工作表名稱'), el('input', { id: 'tblSheetName', value: sh.name, oninput: e => { sh.name = e.target.value; } }));
+  if (sh.notes) card.append(el('div', { class: 'muted small', id: 'tblNotes' }, '備註:' + sh.notes));
+  const ncol = Math.max(sh.columns.length, ...sh.rows.map(r => r.length), 0);
+  const hasHead = sh.columns.length > 0;
+  const mk = (val, why, onInput) => {
+    const inp = el('input', { value: val, class: why ? 'bad' : '', title: why || '', 'aria-label': '儲存格', oninput: e => { onInput(e.target.value); if (inp.classList.contains('bad')) { inp.classList.remove('bad'); inp.title = ''; } } });
+    return inp;
+  };
+  const table = el('table', { class: 'tbl', id: 'tblEdit' });
+  const delRow = el('tr', { class: 'tbl-del' }, el('td'));
+  for (let c = 0; c < ncol; c++) delRow.append(el('td', {}, el('button', { class: 'x', 'aria-label': '刪除第 ' + (c + 1) + ' 欄', 'data-delcol': c, onclick: () => {
+    if (ncol <= 1) return;
+    sh.columns.splice(c, 1); sh.hbad.splice(c, 1); sh.rows.forEach(r => r.splice(c, 1)); sh.bad.forEach(r => r.splice(c, 1)); rerender();
+  } }, '×')));
+  table.append(delRow);
+  if (hasHead) {
+    const tr = el('tr', { class: 'tbl-head' }, el('th', {}, ''));
+    sh.columns.forEach((v, c) => tr.append(el('th', {}, mk(v, sh.hbad[c], x => { sh.columns[c] = x; sh.hbad[c] = ''; }))));
+    table.append(tr);
+  }
+  sh.rows.forEach((r, ri) => {
+    const tr = el('tr', {}, el('td', {}, el('button', { class: 'x', 'aria-label': '刪除第 ' + (ri + 1) + ' 列', 'data-delrow': ri, onclick: () => { sh.rows.splice(ri, 1); sh.bad.splice(ri, 1); rerender(); } }, '×')));
+    for (let c = 0; c < ncol; c++) tr.append(el('td', {}, mk(r[c] == null ? '' : r[c], sh.bad[ri][c], x => { r[c] = x; sh.bad[ri][c] = ''; })));
+    table.append(tr);
+  });
+  card.append(el('div', { class: 'tbl-wrap' }, table));
+  const nBad = sh.hbad.filter(Boolean).length + sh.bad.reduce((a, r) => a + r.filter(Boolean).length, 0);
+  if (nBad) card.append(el('div', { class: 'small', id: 'tblBadNote' }, '黃色格子(' + nBad + ' 格)是讀不清楚的,請對照原圖確認;修改後黃色會消失。游標停留可看原因。'));
+  if (it.lost.length) card.append(el('div', { class: 'muted small' }, '其他讀不清楚之處:' + it.lost.join(';')));
+  card.append(el('div', { class: 'row-btns' },
+    el('button', { class: 'btn sm', id: 'tblAddRow', onclick: () => {
+      const n = Math.max(ncol, 1);
+      sh.rows.push(new Array(n).fill('')); sh.bad.push(new Array(n).fill(''));
+      if (hasHead) while (sh.columns.length < n) { sh.columns.push(''); sh.hbad.push(''); }
+      rerender();
+    } }, '＋ 新增列'),
+    el('button', { class: 'btn sm', id: 'tblAddCol', onclick: () => {
+      if (hasHead) { sh.columns.push(''); sh.hbad.push(''); }
+      sh.rows.forEach((r, i) => { while (r.length < ncol) r.push(''); r.push(''); sh.bad[i].push(''); });
+      rerender();
+    } }, '＋ 新增欄')));
+  const out = s2 => ({ name: s2.name, columns: s2.columns, rows: s2.rows });
+  card.append(el('div', { class: 'row-btns' },
+    el('button', { class: 'btn primary', id: 'tblXlsx', onclick: () => saveBlob(new Blob([Xlsx.build(it.sheets.map(out))], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), fileBase(it) + '.xlsx') }, '下載 .xlsx'),
+    el('button', { class: 'btn', id: 'tblCsv', onclick: () => saveBlob(new Blob([Xlsx.toCSV(it.sheets.map(out))], { type: 'text/csv;charset=utf-8' }), fileBase(it) + '.csv') }, '下載 CSV')));
+  card.append(el('div', { class: 'row-btns' },
+    el('button', { class: 'btn primary', id: 'tblSave', onclick: async () => { try { await Files.saveTable(it); rerender(); } catch (e) { alert('儲存失敗:' + e.message); } } }, it.fileId ? '儲存變更' : '儲存'),
+    el('button', { class: 'btn', id: 'tblSaveShare', onclick: async () => { try { await Files.saveAndShare(it); rerender(); } catch (e) { alert('分享失敗:' + e.message); } } }, '儲存並分享(LINE/雲端硬碟…)')));
+  if (it.fileId) card.append(el('div', { class: 'tag ok', id: 'tblSaved' }, '已儲存到「檔案」'));
+  card.append(el('div', { class: 'muted small' }, manual ? '可直接點格子修改,用「新增列/欄」與 × 調整表格大小。' : '可直接點格子修改。想批次修正(例如「第三欄是單價,改成數字」),請在下方輸入指令送出。'));
+  return card;
+}
+
 const ledgerFilter = { q: '', month: '', category: '', payment: '', payer: '', place: '' };
 
 function openLedger() {
@@ -754,11 +1007,11 @@ function openDetail(id) {
 }
 
 /* 新增/編輯表單 */
-function openExpenseForm(rec) {
+function openExpenseForm(rec, extra) {
   const settings = getSettings();
   const isNew = !rec;
   const r = rec ? JSON.parse(JSON.stringify(rec)) : { id: uuid(), date: today(), store: '', total: null, currency: 'TWD', items: [], payment_method: '', category: '', payer: settings.myName, shared: false, note: '', photoIds: [], createdAt: Date.now() };
-  const newPhotos = [];
+  const newPhotos = ((extra && extra.photos) || []).filter(b => !isPdf(b));
   pushScreen(isNew ? '新增紀錄' : '編輯紀錄', body => {
     const cats = settings.categories.includes(r.category) || !r.category ? settings.categories : settings.categories.concat([r.category]);
     const inDate = el('input', { type: 'date', id: 'fDate', value: r.date });
@@ -784,6 +1037,7 @@ function openExpenseForm(rec) {
     drawItems();
     const photoBox = el('div');
     (async () => { for (const pid of (r.photoIds || [])) { const b = await DB.getPhoto(pid); if (b) photoBox.append(el('img', { class: 'photo-view', src: URL.createObjectURL(b), alt: '照片' })); } })();
+    newPhotos.forEach(b => photoBox.append(el('img', { class: 'photo-view', src: URL.createObjectURL(b), alt: '新照片' })));
     const f = (l, n) => [el('label', { class: 'f' }, l), n];
     body.append(
       ...f('日期', inDate), ...f('店名', inStore), ...f('總額', inTotal), ...f('分類', inCat), newCat,
@@ -800,10 +1054,12 @@ function openExpenseForm(rec) {
         if (total === null) { alert('請輸入總額'); return; }
         if (!cat) { alert('請選擇分類'); return; }
         if (newCat.value.trim() && !settings.categories.includes(cat)) { settings.categories.push(cat); saveSettings(settings); }
-        for (const b of newPhotos) { const id = uuid(); await DB.putPhoto(id, b); r.photoIds.push(id); }
+        for (const b of newPhotos) { const id = uuid(); await DB.putPhoto(id, b, extra && extra.location); r.photoIds.push(id); }
         Object.assign(r, { date, store: inStore.value.trim(), total, category: cat, payment_method: inPay.value, payer: inPayer.value.trim() || settings.myName, shared: inShared.checked, note: inNote.value.trim(), updatedAt: Date.now() });
         r.items = r.items.filter(i => i.name || i.amount != null);
+        if (isNew && extra && extra.location && !r.location) r.location = extra.location;
         await DB.putExpense(r);
+        if (extra && extra.onSaved) extra.onSaved();
         popScreen();
       } }, '儲存'));
   });
@@ -812,13 +1068,19 @@ function openExpenseForm(rec) {
 /* 匯出 / 匯入 */
 async function exportData(withPhotos) {
   const expenses = await DB.allExpenses();
-  const out = { format: 'phototool', version: 1, exportedAt: new Date().toISOString(), settings: { categories: getSettings().categories }, expenses };
+  const files = await DB.allFiles(), menus = await DB.allMenus();
+  const out = { format: 'phototool', version: 2, exportedAt: new Date().toISOString(), settings: { categories: getSettings().categories }, expenses, menus,
+    files: files.map(f => Object.assign({}, f, { photos: undefined, photoCount: (f.photos || []).length })) };
   if (withPhotos) {
     out.photos = {};
     for (const r of expenses) for (const pid of (r.photoIds || [])) {
       const b = await DB.getPhoto(pid);
       if (b) out.photos[pid] = 'data:' + (b.type || 'image/jpeg') + ';base64,' + await AI.blobToBase64(b);
     }
+  }
+  if (withPhotos) {
+    out.filePhotos = {};
+    for (const f of files) { out.filePhotos[f.id] = []; for (const b of (f.photos || [])) out.filePhotos[f.id].push('data:' + (b.type || 'image/jpeg') + ';base64,' + await AI.blobToBase64(b)); }
   }
   const blob = new Blob([JSON.stringify(out)], { type: 'application/json' });
   const a = el('a', { href: URL.createObjectURL(blob), download: 'phototool-' + today() + '.json' });
@@ -842,10 +1104,20 @@ async function importData(ev) {
       if (j.photos) r.photoIds = (r.photoIds || []).filter(pid => j.photos[pid]); else r.photoIds = [];
       await DB.putExpense(r); added++;
     }
+    let fAdded = 0, mAdded = 0;
+    const haveF = new Set((await DB.allFiles()).map(r => r.id)), haveM = new Set((await DB.allMenus()).map(r => r.id));
+    for (const f of (j.files || [])) {
+      if (!f.id || haveF.has(f.id)) continue;
+      const photos = [];
+      for (const d of ((j.filePhotos && j.filePhotos[f.id]) || [])) photos.push(await (await fetch(d)).blob());
+      delete f.photoCount; f.photos = photos; await DB.putFile(f); fAdded++;
+    }
+    for (const m of (j.menus || [])) { if (m.id && !haveM.has(m.id)) { await DB.putMenu(m); mAdded++; } }
+    added += fAdded + mAdded;
     const s = getSettings(); const cats = (j.settings && j.settings.categories) || [];
     let ch = false; cats.forEach(c => { if (!s.categories.includes(c)) { s.categories.push(c); ch = true; } });
     if (ch) saveSettings(s);
-    alert('匯入完成:新增 ' + added + ' 筆,略過重複 ' + skipped + ' 筆');
+    alert('匯入完成:新增 ' + added + ' 筆(含檔案與菜單),略過重複 ' + skipped + ' 筆');
   } catch (e) { alert('匯入失敗:' + e.message); }
   refreshTop();
 }
@@ -884,35 +1156,64 @@ async function renderSettingsTab(root) {
   let persisted = '不支援';
   try { if (navigator.storage && navigator.storage.persisted) persisted = (await navigator.storage.persisted()) ? '已啟用(資料不易被系統清除)' : '未啟用(瀏覽器可能在空間不足時清除資料)'; } catch (_) { /* ignore */ }
   const locOn = el('input', { type: 'checkbox', id: 'setLoc', checked: s.locationEnabled !== false, style: 'width:22px;height:22px' });
+  const aiCb = el('input', { type: 'checkbox', id: 'setAI', checked: aiOn(s), style: 'width:22px;height:22px' });
   const api = el('input', { type: 'password', id: 'setKey', value: s.apiKey, placeholder: 'sk-ant-...', autocomplete: 'off' });
   const proxy = el('input', { type: 'url', id: 'setProxy', value: s.proxyUrl, placeholder: '(選填)中轉網址;填了就不使用金鑰直連' });
   const model = el('input', { type: 'text', id: 'setModel', value: s.model });
   const cmodel = el('input', { type: 'text', id: 'setCModel', value: s.classifyModel });
   const me = el('input', { type: 'text', id: 'setMe', value: s.myName });
+  const dbUrl = el('input', { type: 'url', id: 'setDb', value: s.dbUrl || '', placeholder: 'https://你的專案-default-rtdb.firebaseio.com' });
+  const mockCb = el('input', { type: 'checkbox', id: 'setMock', checked: !!s.useMock, style: 'width:22px;height:22px' });
   const cats = el('textarea', { id: 'setCats', rows: 3 }, s.categories.join('、'));
   cats.value = s.categories.join('、');
   const f = (l, n, hint) => [el('label', { class: 'f' }, l), n, hint ? el('div', { class: 'muted small' }, hint) : null];
   root.append(el('div', { class: 'card' },
+    el('label', { class: 'row', style: 'margin:0 0 8px' }, aiCb, 'AI 分析(關閉時全部手動操作,不呼叫 AI)'),
     ...f('Anthropic API 金鑰', api, '只存在這支手機本機。僅測試用,勿在公用裝置輸入。'),
     ...f('中轉網址 Proxy URL', proxy, '格式同 messages API,不帶金鑰;未填則直連 api.anthropic.com。'),
     ...f('主流程模型名稱', model),
     ...f('分類用模型名稱(較小、較省)', cmodel),
     el('label', { class: 'row', style: 'margin:12px 0 0' }, locOn, '拍照時記錄位置(被拒絕會自動略過)'),
     el('div', { class: 'muted small', id: 'persistInfo' }, '持久儲存:' + persisted),
+    ...f('點餐用資料庫網址(Firebase Realtime Database)', dbUrl, '開團需要。填你自己的 Firebase 專案網址,步驟見「Firebase設定步驟.md」。App 不內建網址。連結取得者可在結單前新增/修改訂單;發起人身分僅由 App 判斷,不要把點餐連結公開張貼到不信任的場合。'),
+    el('details', { class: 'adv', id: 'advBox' }, el('summary', {}, '進階'), el('label', { class: 'row', style: 'margin:8px 0 0' }, mockCb, '測試模式(假連線,只有同一個瀏覽器的分頁互通,不經網路;一般使用請勿開啟)')),
+    el('div', { class: 'row-btns' },
+      el('button', { class: 'btn', id: 'btnExportAll', onclick: () => exportData(false) }, '匯出全部檔案'),
+      el('button', { class: 'btn', id: 'btnExportAllPhotos', onclick: () => exportData(true) }, '匯出全部(含照片)'),
+      el('label', { class: 'btn' }, '匯入', el('input', { type: 'file', accept: 'application/json,.json', class: 'hidden', id: 'importFile2', onchange: importData }))),
     ...f('我的名稱', me, '新記帳的付款人預設值;報表的「我/家人」也依此判斷。'),
     ...f('分類(用「、」或逗號分隔)', cats),
     el('button', { class: 'btn primary block', id: 'btnSaveSettings', style: 'margin-top:12px', onclick: () => {
+      const dbv = dbUrl.value.trim();
+      if (dbv && !validDbUrl(dbv)) { alert('資料庫網址格式不對(需為 https://…firebaseio.com 或 …firebasedatabase.app)'); return; }
       const cl = cats.value.split(/[、,，\n]/).map(x => x.trim()).filter(Boolean);
-      saveSettings({ apiKey: api.value.trim(), proxyUrl: proxy.value.trim(), model: model.value.trim() || 'claude-sonnet-5-5', classifyModel: cmodel.value.trim() || 'claude-haiku-5-5', locationEnabled: locOn.checked, myName: me.value.trim() || '我', categories: cl.length ? cl : DEFAULT_CATS.slice() });
+      saveSettings({ aiEnabled: (hasAiKey(s) !== hasAiKey({ apiKey: api.value, proxyUrl: proxy.value }) || aiCb.checked === hasAiKey({ apiKey: api.value, proxyUrl: proxy.value })) ? undefined : aiCb.checked, apiKey: api.value.trim(), proxyUrl: proxy.value.trim(), model: model.value.trim() || 'claude-sonnet-5-5', classifyModel: cmodel.value.trim() || 'claude-haiku-5-5', locationEnabled: locOn.checked, dbUrl: dbv, useMock: mockCb.checked, myName: me.value.trim() || '我', categories: cl.length ? cl : DEFAULT_CATS.slice() });
       alert('已儲存');
     } }, '儲存設定')));
-  root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '多功能拍照工具 v1'));
+  root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '多功能拍照工具 v3'));
 }
 
 /* ---------- 啟動 ---------- */
+const roomParams = parseRoomParams(location.search);
+if (roomParams) cam.suppress = true;
 renderHome();
+if (roomParams) openRoomJoin(roomParams);
+cleanupRooms();
 if (navigator.storage && navigator.storage.persist) { navigator.storage.persist().catch(() => { /* 不影響主功能 */ }); }
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => { /* 離線功能不可用,不影響主功能 */ });
 }
 window.addEventListener('online', () => { if (!stack.length) homeRefresh(); });
+
+// 發起人開 App 時清掉自己建過、已過 24 小時的房(沒網路就保留紀錄,下次再試)
+async function cleanupRooms() {
+  try {
+    const rooms = await DB.allRooms();
+    for (const r of rooms) {
+      if (Date.now() <= r.createdAt + 24 * 3600 * 1000) continue;
+      try { const { net } = getNet({ db: r.dbUrl, mock: r.mock }); await net.deleteRoom(r.code); await DB.deleteRoom(r.code); } catch (e) { console.warn('清除過期房失敗', r.code, e.message); }
+    }
+  } catch (e) { console.warn('清除過期房失敗', e.message); }
+}
+
+export { el, $, uuid, pad2, today, fmt, esc, pushScreen, popScreen, refreshTop, thumbImg, resizeImage, isPdf, anchorDownload, saveBlob, makeTable, tableToJson, tableCard, fileBase, getSettings, saveSettings, selectOf, openSettings, aiOn, photoStrip, MAX_FILE_BYTES };

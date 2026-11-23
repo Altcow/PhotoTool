@@ -1,16 +1,30 @@
-const VERSION = 'v1';
+const VERSION = 'v3';
 const CACHE = 'phototool-' + VERSION;
 const PRECACHE = [
   './',
   './index.html',
   './manifest.webmanifest',
   './css/app.css',
+  './css/v3.css',
   './js/app.js',
   './js/db.js',
   './js/ai.js',
+  './js/config.js',
+  './js/net.js',
+  './js/net_mock.js',
+  './js/net_firebase.js',
+  './js/netctx.js',
+  './js/ui_files.js',
+  './js/ui_menu.js',
+  './js/ui_room.js',
   './js/lib/split.js',
   './js/lib/aggregate.js',
   './js/lib/reconcile.js',
+  './js/lib/xlsx.js',
+  './js/lib/order.js',
+  './js/lib/menu.js',
+  './js/lib/rtdb.js',
+  './js/lib/qr.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
 ];
