@@ -292,7 +292,7 @@
       items: arr(raw.items).map(function (it) { it = it || {}; var o = { name: String(it.name == null ? '' : it.name).trim().slice(0, 80), qty: it.qty == null ? 1 : Number(it.qty) || 1, amount: intOrZero(it.amount), people: uniq(arr(it.people)) }; if (it.desc) o.desc = String(it.desc).slice(0, 60); if (it.line !== undefined && it.line !== null) o.line = Number(it.line) || 0; return o; }),
       fees: arr(raw.fees).map(function (f) { f = f || {}; return { name: String(f.name == null ? '' : f.name).trim().slice(0, 40), amount: intOrZero(f.amount) }; }),
       note: String(raw.note == null ? '' : raw.note).slice(0, 300), ts: Number(raw.ts) || Date.now(), source: raw.source === 'note' ? 'note' : 'manual',
-      date: normDate(raw.date, raw.ts), status: raw.status === 'todo' ? 'todo' : 'done', requireAssign: !!raw.requireAssign, qty: Math.max(0, intOrZero(raw.qty)), unitPrice: Math.max(0, intOrZero(raw.unitPrice)), useWeights: raw.useWeights === false ? false : true,
+      date: normDate(raw.date, raw.ts), status: raw.status === 'todo' ? 'todo' : 'done', requireAssign: !!raw.requireAssign, mediaIds: arr(raw.mediaIds).map(String), qty: Math.max(0, intOrZero(raw.qty)), unitPrice: Math.max(0, intOrZero(raw.unitPrice)), useWeights: raw.useWeights === false ? false : true,
     };
   }
   function normalizeFamilies(f) {

@@ -3,6 +3,9 @@ import * as AI from './ai.js';
 import * as Files from './ui_files.js';
 import * as MenuUI from './ui_menu.js';
 import * as LedgerUI from './ui_ledger.js';
+import * as Media from './media.js';
+import * as Cloud from './cloud.js';
+import * as CloudUI from './ui_cloud.js';
 import { openRoomJoin } from './ui_room.js';
 import { parseRoomParams, getNet } from './netctx.js';
 import { validDbUrl } from './net.js';
@@ -70,7 +73,7 @@ function mdToHtml(text) {
 function getSettings() {
   let s = {};
   try { s = JSON.parse(localStorage.getItem('pt_settings') || '{}'); } catch (_) { s = {}; }
-  return Object.assign({ apiKey: '', proxyUrl: '', model: 'claude-sonnet-5-5', classifyModel: 'claude-haiku-5-5', locationEnabled: true, dbUrl: '', useMock: false, myName: '我', myAccount: '', categories: DEFAULT_CATS.slice() }, s);
+  return Object.assign({ apiKey: '', proxyUrl: '', model: 'claude-sonnet-5-5', classifyModel: 'claude-haiku-5-5', locationEnabled: true, dbUrl: '', useMock: false, myName: '我', myAccount: '', mediaStore: 'local', googleClientId: '', deleteLocalAfterUpload: false, categories: DEFAULT_CATS.slice() }, s);
 }
 const hasAiKey = s => !!((s.apiKey || '').trim() || (s.proxyUrl || '').trim());
 // AI 分析是否啟用:未明確設定時,有金鑰/中轉就開、沒有就關
@@ -166,6 +169,7 @@ function renderHome() {
     el('div', { class: 'cam-msg', id: 'camMsg' }),
     el('label', { class: 'btn primary', id: 'btnFileCapture' }, '📷 拍照', el('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'hidden', id: 'inpCam', onchange: ev => addFiles(ev, true) })));
   home.pendingChip = el('button', { class: 'cam-chip hidden', id: 'btnPending' });
+  home.uploadChip = el('button', { class: 'cam-chip hidden', id: 'btnUploads', onclick: () => CloudUI.uploadNow().then(homeRefresh).catch(e => alert(e.message)) });
   home.thumbs = el('div', { class: 'cam-thumbs', id: 'camThumbs' });
   home.shutter = el('button', { class: 'shutter', id: 'btnShutter', 'aria-label': '拍照', onclick: shoot });
   home.flip = el('button', { class: 'cam-btn', id: 'btnFlip', 'aria-label': '切換鏡頭', onclick: () => { cam.facing = cam.facing === 'environment' ? 'user' : 'environment'; startCamera(); } }, '🔄');
@@ -173,7 +177,7 @@ function renderHome() {
   home.flash = el('div', { class: 'cam-flash' });
   mainEl.append(el('div', { class: 'cam' },
     home.video, home.fallbackBox, home.flash,
-    el('div', { class: 'cam-top' }, home.pendingChip, el('div', { class: 'grow' }),
+    el('div', { class: 'cam-top' }, home.pendingChip, home.uploadChip, el('div', { class: 'grow' }),
       el('button', { class: 'cam-btn', id: 'btnStats', 'aria-label': '我的旅行', onclick: () => LedgerUI.openMyStats() }, '📊'),
       el('button', { class: 'cam-btn', id: 'btnTrips', 'aria-label': '分帳記事本', onclick: () => LedgerUI.openTripList() }, '🧾'),
       el('button', { class: 'cam-btn', id: 'btnOrder', 'aria-label': '開團點餐', onclick: () => MenuUI.openOrderHub() }, '🍹'),
@@ -205,6 +209,7 @@ async function homeRefresh() {
     home.pendingChip.textContent = '待處理 ' + p.length + ' 筆';
     home.pendingChip.onclick = () => processPending(p[0]);
   } catch (_) { /* ignore */ }
+  try { const c = await Media.mediaApi().counts(); home.uploadChip.classList.toggle('hidden', !c.waiting); home.uploadChip.textContent = '待上傳 ' + c.waiting + ' 張'; } catch (_) { /* 媒體模組未就緒 */ }
 }
 
 function showCamFallback(reason) {
@@ -610,7 +615,7 @@ function selectOf(options, value, onChange, disabled, placeholder) {
 async function saveDraft(draft, photoBlobs, loc) {
   const d = draft.data;
   const photoIds = [];
-  for (const b of (photoBlobs || [])) { const id = uuid(); await DB.putPhoto(id, b, loc); photoIds.push(id); }
+  for (const b of (photoBlobs || [])) photoIds.push(await Media.saveMedia(b, { kind: 'expense', location: loc }));
   const rec = {
     id: uuid(), date: d.date, store: d.store || '', total: d.total, currency: d.currency || 'TWD', items: d.items,
     payment_method: d.payment_method || '', category: d.category, payer: d.payer, shared: !!d.shared, note: d.note || '',
@@ -666,7 +671,7 @@ function splitCard(it, chat, rerender) {
       items, payment_method: '', category: '餐飲', payer: settings.myName, shared: false,
       note: whole ? '分帳(整張):' + r.people.map(p => p.name + ' ' + fmt(p.total)).join('、') : '分帳(' + meName + ' 那份)', photoIds: [], location: chat.location || null, createdAt: Date.now(), updatedAt: Date.now(),
     };
-    for (const b of (chat.photoBlobs || [])) { const id = uuid(); await DB.putPhoto(id, b, chat.location); rec.photoIds.push(id); }
+    for (const b of (chat.photoBlobs || [])) rec.photoIds.push(await Media.saveMedia(b, { kind: 'expense', location: chat.location }));
     await DB.putExpense(rec);
     it.saved = true; rerender();
   };
@@ -1002,7 +1007,8 @@ function openDetail(id) {
       el('tr', {}, el('th', {}, '品名'), el('th', { class: 'n' }, '數量'), el('th', { class: 'n' }, '單價'), el('th', { class: 'n' }, '金額')),
       r.items.map(it => el('tr', {}, el('td', {}, it.name), el('td', { class: 'n' }, fmt(it.qty)), el('td', { class: 'n' }, fmt(it.unit_price)), el('td', { class: 'n' }, fmt(it.amount)))))));
     for (const pid of (r.photoIds || [])) {
-      const b = await DB.getPhoto(pid);
+      let b = null;
+      try { b = await Media.getMedia(pid); } catch (e) { body.append(el('div', { class: 'muted', id: 'needCloud' }, '🖼 ' + e.message)); }
       if (b) { const u = URL.createObjectURL(b); urls.push(u); body.append(el('img', { class: 'photo-view', src: u, alt: '收據照片' })); }
     }
     body.append(el('div', { class: 'row' },
@@ -1041,7 +1047,7 @@ function openExpenseForm(rec, extra) {
     };
     drawItems();
     const photoBox = el('div');
-    (async () => { for (const pid of (r.photoIds || [])) { const b = await DB.getPhoto(pid); if (b) photoBox.append(el('img', { class: 'photo-view', src: URL.createObjectURL(b), alt: '照片' })); } })();
+    (async () => { for (const pid of (r.photoIds || [])) { let b = null; try { b = await Media.getMedia(pid); } catch (e) { photoBox.append(el('div', { class: 'muted' }, '🖼 ' + e.message)); } if (b) photoBox.append(el('img', { class: 'photo-view', src: URL.createObjectURL(b), alt: '照片' })); } })();
     newPhotos.forEach(b => photoBox.append(el('img', { class: 'photo-view', src: URL.createObjectURL(b), alt: '新照片' })));
     const f = (l, n) => [el('label', { class: 'f' }, l), n];
     body.append(
@@ -1059,7 +1065,7 @@ function openExpenseForm(rec, extra) {
         if (total === null) { alert('請輸入總額'); return; }
         if (!cat) { alert('請選擇分類'); return; }
         if (newCat.value.trim() && !settings.categories.includes(cat)) { settings.categories.push(cat); saveSettings(settings); }
-        for (const b of newPhotos) { const id = uuid(); await DB.putPhoto(id, b, extra && extra.location); r.photoIds.push(id); }
+        for (const b of newPhotos) r.photoIds.push(await Media.saveMedia(b, { kind: 'expense', location: extra && extra.location }));
         Object.assign(r, { date, store: inStore.value.trim(), total, category: cat, payment_method: inPay.value, payer: inPayer.value.trim() || settings.myName, shared: inShared.checked, note: inNote.value.trim(), updatedAt: Date.now() });
         r.items = r.items.filter(i => i.name || i.amount != null);
         if (isNew && extra && extra.location && !r.location) r.location = extra.location;
@@ -1079,7 +1085,7 @@ async function exportData(withPhotos) {
   if (withPhotos) {
     out.photos = {};
     for (const r of expenses) for (const pid of (r.photoIds || [])) {
-      const b = await DB.getPhoto(pid);
+      let b = null; try { b = await Media.getMedia(pid); } catch (_) { /* 雲端取不到就略過這張 */ }
       if (b) out.photos[pid] = 'data:' + (b.type || 'image/jpeg') + ';base64,' + await AI.blobToBase64(b);
     }
   }
@@ -1194,13 +1200,21 @@ async function renderSettingsTab(root) {
       const dbv = dbUrl.value.trim();
       if (dbv && !validDbUrl(dbv)) { alert('資料庫網址格式不對(需為 https://…firebaseio.com 或 …firebasedatabase.app)'); return; }
       const cl = cats.value.split(/[、,，\n]/).map(x => x.trim()).filter(Boolean);
-      saveSettings({ aiEnabled: (hasAiKey(s) !== hasAiKey({ apiKey: api.value, proxyUrl: proxy.value }) || aiCb.checked === hasAiKey({ apiKey: api.value, proxyUrl: proxy.value })) ? undefined : aiCb.checked, apiKey: api.value.trim(), proxyUrl: proxy.value.trim(), model: model.value.trim() || 'claude-sonnet-5-5', classifyModel: cmodel.value.trim() || 'claude-haiku-5-5', locationEnabled: locOn.checked, myAccount: acct.value.trim(), dbUrl: dbv, useMock: mockCb.checked, myName: me.value.trim() || '我', categories: cl.length ? cl : DEFAULT_CATS.slice() });
+      saveSettings(Object.assign({}, getSettings(), { aiEnabled: (hasAiKey(s) !== hasAiKey({ apiKey: api.value, proxyUrl: proxy.value }) || aiCb.checked === hasAiKey({ apiKey: api.value, proxyUrl: proxy.value })) ? undefined : aiCb.checked, apiKey: api.value.trim(), proxyUrl: proxy.value.trim(), model: model.value.trim() || 'claude-sonnet-5-5', classifyModel: cmodel.value.trim() || 'claude-haiku-5-5', locationEnabled: locOn.checked, myAccount: acct.value.trim(), dbUrl: dbv, useMock: mockCb.checked, myName: me.value.trim() || '我', categories: cl.length ? cl : DEFAULT_CATS.slice() }));
       alert('已儲存');
     } }, '儲存設定')));
-  root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '多功能拍照工具 v3'));
+  root.append(CloudUI.mediaCard());
+  root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '多功能拍照工具 v5'));
 }
 
 /* ---------- 啟動 ---------- */
+Media.initMedia({
+  store: { getRec: DB.getPhotoRec, putRec: DB.putPhotoRec, delRec: DB.deletePhoto, allRecs: DB.allPhotoRecs, allUploads: DB.allUploads, putUpload: DB.putUpload, delUpload: DB.deleteUpload },
+  drive: window.Drive, uq: window.UploadQ, fetch: (u, i) => fetch(u, i), settings: () => getSettings(), tokenInfo: () => Cloud.tokenInfo(),
+  online: () => navigator.onLine, uuid, now: () => Date.now(),
+});
+Media.mediaApi().recover().catch(e => console.warn('上傳佇列復原失敗', e));
+Media.mediaApi().onChange(() => { if (!stack.length) homeRefresh(); });
 const roomParams = parseRoomParams(location.search);
 if (roomParams) cam.suppress = true;
 renderHome();

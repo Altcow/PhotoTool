@@ -2,6 +2,7 @@
 // 與 app.js 循環匯入:只在函式內使用,不在模組頂層呼叫
 import * as DB from './db.js';
 import { exportSheet } from './ui_export.js';
+import * as Media from './media.js';
 import { el, uuid, today, pushScreen, popScreen, makeTable, tableToJson, tableCard, fileBase, anchorDownload, thumbImg, isPdf } from './app.js';
 
 const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -17,6 +18,10 @@ export async function saveTable(it) {
     createdAt: it.fileCreated || Date.now(), updatedAt: Date.now(),
     sheets: tableToJson(it).sheets, photos: (it.photos || []).slice(), location: it.location || null,
   };
+  // 原圖仍內嵌在紀錄裡(顯示用);另外登記一份媒體紀錄,設為雲端時由佇列上傳。每張只登記一次
+  const ids = (it.mediaIds || []).slice();
+  for (let i = 0; i < rec.photos.length; i++) if (!ids[i]) ids[i] = await Media.saveMedia(rec.photos[i], { kind: 'file', ownerId: rec.id });
+  rec.mediaIds = ids; it.mediaIds = ids;
   await DB.putFile(rec);
   it.fileId = rec.id; it.fileCreated = rec.createdAt;
   if (!it.title) it.title = rec.title;
@@ -74,7 +79,7 @@ function openFileDetail(id) {
     const rec = await DB.getFile(id);
     if (!rec) { body.append(el('div', { class: 'empty' }, '找不到這個檔案')); return; }
     const it = makeTable({ title: rec.title, sheets: rec.sheets });
-    it.fileId = rec.id; it.fileCreated = rec.createdAt; it.photos = rec.photos || []; it.location = rec.location;
+    it.fileId = rec.id; it.fileCreated = rec.createdAt; it.photos = rec.photos || []; it.mediaIds = rec.mediaIds || []; it.location = rec.location;
     const box = el('div');
     const urls = [];
     const draw = () => box.replaceChildren(tableCard(it, draw, true));

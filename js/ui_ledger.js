@@ -5,6 +5,7 @@ import * as AI from './ai.js';
 import { el, uuid, today, pad2, pushScreen, popScreen, thumbImg, resizeImage, getSettings, aiOn, isPdf, MAX_FILE_BYTES } from './app.js';
 import { copyText, shareText } from './ui_room.js';
 import { exportSheet } from './ui_export.js';
+import * as Media from './media.js';
 
 const { Settle, Ledger, Reconcile, Stats, Sheets } = window;
 const bigBtn = (icon, text, onclick, cls, id) => el('button', { class: 'big-btn ' + (cls || ''), id, onclick }, el('span', { class: 'bi' }, icon), el('span', { class: 'bt' }, text));
@@ -320,10 +321,10 @@ function openRecord(trip, rec, onDone) {
     }
     function drawPhotos() {
       const ai = aiOn(getSettings());
-      const add = async ev => { const files = Array.from(ev.target.files || []); ev.target.value = ''; for (const f of files) { if (f.size > MAX_FILE_BYTES) { alert('檔案太大'); continue; } try { r.photos.push(f.type === 'application/pdf' ? f : await resizeImage(f)); } catch (_) { alert('讀取失敗'); } } drawPhotos(); later(); };
+      const add = async ev => { const files = Array.from(ev.target.files || []); ev.target.value = ''; for (const f of files) { if (f.size > MAX_FILE_BYTES) { alert('檔案太大'); continue; } try { const b = f.type === 'application/pdf' ? f : await resizeImage(f); r.photos.push(b); r.mediaIds = r.mediaIds || []; r.mediaIds[r.photos.length - 1] = await Media.saveMedia(b, { kind: 'trip', ownerId: r.id }); } catch (_) { alert('讀取失敗'); } } drawPhotos(); later(); };
       const out = el('div', { id: 'receiptOut' });
       photoBox.replaceChildren(el('label', { class: 'f' }, '收據照片(可選)'),
-        r.photos.length ? el('div', { class: 'thumbs' }, r.photos.map((b, i) => el('div', { class: 'thumb' }, thumbImg(b, '收據'), el('button', { 'aria-label': '移除', onclick: () => { r.photos.splice(i, 1); drawPhotos(); later(); } }, '×')))) : null,
+        r.photos.length ? el('div', { class: 'thumbs' }, r.photos.map((b, i) => el('div', { class: 'thumb' }, thumbImg(b, '收據'), el('button', { 'aria-label': '移除', onclick: () => { r.photos.splice(i, 1); if (r.mediaIds) r.mediaIds.splice(i, 1); drawPhotos(); later(); } }, '×')))) : null,
         el('div', { class: 'row wrap' },
           el('label', { class: 'btn sm' }, '📷 拍照', el('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'hidden', id: 'recCam', onchange: add })),
           el('label', { class: 'btn sm' }, '🖼 相簿/PDF', el('input', { type: 'file', accept: 'image/*,application/pdf', multiple: true, class: 'hidden', id: 'recAlbum', onchange: add })),

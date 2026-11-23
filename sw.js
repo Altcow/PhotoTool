@@ -1,4 +1,4 @@
-const VERSION = 'v4';
+const VERSION = 'v5';
 const CACHE = 'phototool-' + VERSION;
 const PRECACHE = [
   './',
@@ -19,6 +19,9 @@ const PRECACHE = [
   './js/ui_room.js',
   './js/ui_ledger.js',
   './js/ui_export.js',
+  './js/ui_cloud.js',
+  './js/cloud.js',
+  './js/media.js',
   './js/lib/split.js',
   './js/lib/aggregate.js',
   './js/lib/reconcile.js',
@@ -33,6 +36,9 @@ const PRECACHE = [
   './js/lib/render.js',
   './js/lib/pdf.js',
   './js/lib/sheets.js',
+  './js/lib/drive.js',
+  './js/lib/uploadq.js',
+  './js/lib/cloudgate.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
 ];

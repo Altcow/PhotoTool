@@ -1,6 +1,6 @@
-// IndexedDB:expenses(帳本)、photos(照片 Blob)、pending(離線排隊的分析請求)、files(檔案紀錄)、menus(菜單範本)、rooms(我開過的團)、trips(分帳記事本活動)
+// IndexedDB:expenses(帳本)、photos(照片 Blob)、pending(離線排隊的分析請求)、files(檔案紀錄)、menus(菜單範本)、rooms(我開過的團)、trips(分帳記事本活動)、uploads(雲端上傳佇列)
 const DB_NAME = 'phototool';
-const DB_VER = 3;
+const DB_VER = 4;
 let dbp = null;
 
 function open() {
@@ -12,7 +12,7 @@ function open() {
       if (!db.objectStoreNames.contains('expenses')) db.createObjectStore('expenses', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('photos')) db.createObjectStore('photos', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('pending')) db.createObjectStore('pending', { keyPath: 'id' });
-      ['files', 'menus', 'rooms', 'trips'].forEach(n => { if (!db.objectStoreNames.contains(n)) db.createObjectStore(n, { keyPath: n === 'rooms' ? 'code' : 'id' }); });
+      ['files', 'menus', 'rooms', 'trips', 'uploads'].forEach(n => { if (!db.objectStoreNames.contains(n)) db.createObjectStore(n, { keyPath: n === 'rooms' ? 'code' : 'id' }); });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -71,3 +71,11 @@ export const allTrips = () => tx('trips', 'readonly', s => s.getAll());
 export const getTrip = id => tx('trips', 'readonly', s => s.get(id));
 export const putTrip = rec => tx('trips', 'readwrite', s => s.put(rec));
 export const deleteTrip = id => tx('trips', 'readwrite', s => s.delete(id));
+
+// 媒體紀錄(photos store)含雲端欄位:storage / driveFileId / uploadState / attempts / lastError;舊資料沒有這些欄位視為本機
+export const getPhotoRec = id => tx('photos', 'readonly', s => s.get(id));
+export const putPhotoRec = rec => tx('photos', 'readwrite', s => s.put(rec));
+export const allPhotoRecs = () => tx('photos', 'readonly', s => s.getAll());
+export const allUploads = () => tx('uploads', 'readonly', s => s.getAll());
+export const putUpload = e => tx('uploads', 'readwrite', s => s.put(e));
+export const deleteUpload = id => tx('uploads', 'readwrite', s => s.delete(id));
