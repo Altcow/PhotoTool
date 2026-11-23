@@ -155,6 +155,62 @@ export const TOOLS = [
     },
   },
   {
+    name: 'parse_expenses',
+    description: '使用者口述/貼上一段話描述多筆「誰付了多少錢」時使用:拆成多筆付費記錄。只照抄人名與金額,不計算分攤。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        records: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: '這筆花在什麼(例:買飲料)' },
+              payer: { type: 'string', description: '實際付錢的人' },
+              amount: { type: 'integer', description: '整數元;口述的「一千零二十四」「一零二四」都轉成 1024' },
+              participants: { type: 'array', items: { type: 'string' }, description: '使用者明確說了誰分攤才填;沒說就不要填(程式視為全員)' },
+              note: { type: 'string' },
+            },
+            required: ['title', 'payer', 'amount'],
+          },
+        },
+        members: { type: 'array', items: { type: 'string' }, description: '提到的所有人名(同音錯字、相近的人名請歸併成同一個)' },
+        questions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' }, options: { type: 'array', items: { type: 'string' } } }, required: ['id', 'text'] }, description: '人名可能是同一人、金額聽不清楚等需要使用者確認的事' },
+        unclear: { type: 'array', items: { type: 'string' }, description: '聽不懂或不確定的片段' },
+      },
+      required: ['records'],
+    },
+  },
+  {
+    name: 'update_split',
+    description: '使用者用文字/語音說明某一筆記錄「誰分攤、誰沒吃、誰吃幾份、各人金額、哪些品項歸誰」時使用。只整理成結構,金額加總與餘數由程式處理。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        participants: { type: 'array', items: { type: 'string' }, description: '平均分給這些人(只有平均分時填)' },
+        shares: { type: 'object', additionalProperties: { type: 'integer' }, description: '份數,例 {"小新":2,"小玉":1}' },
+        amounts: { type: 'object', additionalProperties: { type: 'integer' }, description: '各人自訂金額(整數元)' },
+        items: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, qty: { type: 'number' }, amount: { type: 'integer' }, people: { type: 'array', items: { type: 'string' }, description: '這個品項由誰負擔;空陣列=全員' } }, required: ['name', 'amount'] }, description: '明細帳品項(收據上的品項金額照抄)' },
+        questions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' }, options: { type: 'array', items: { type: 'string' } } }, required: ['id', 'text'] } },
+      },
+    },
+  },
+  {
+    name: 'extract_receipt',
+    description: '從收據/帳單照片列出品項與金額:忠實照抄,不猜、不加總。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string' },
+        items: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, qty: { type: 'number' }, amount: { type: 'integer', description: '該行金額,照抄' } }, required: ['name', 'amount'] } },
+        extra_fees: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, amount: { type: 'integer' } }, required: ['name', 'amount'] }, description: '服務費、稅等' },
+        total: { type: 'integer', description: '收據印的總額,照抄' },
+        unreadable: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['items'],
+    },
+  },
+  {
     name: 'calc_numbers',
     description: '使用者要計算照片中的數字時使用:只負責抽出數字與選擇運算方式,不要自己算出結果,由程式計算。',
     input_schema: {
@@ -203,7 +259,7 @@ export function buildSystem(today, categories) {
   return [
     '你是「多功能拍照工具」的助理。使用者用手機拍照(收據、菜單、植物、數字…)並用口述或文字說明需求,請用繁體中文(台灣用語)回應。',
     '今天日期:' + today + '。',
-    '每次回應必須呼叫且只呼叫一個工具:answer(一般問答/翻譯/查資料)、record_expense(記入記帳本)、split_bill(分帳)、calc_numbers(抽出數字讓程式計算)、extract_table(表格/表單轉 Excel)、extract_menu(菜單做成點餐菜單)。',
+    '每次回應必須呼叫且只呼叫一個工具:answer(一般問答/翻譯/查資料)、record_expense(記入記帳本)、split_bill(分帳)、calc_numbers(抽出數字讓程式計算)、extract_table(表格/表單轉 Excel)、extract_menu(菜單做成點餐菜單)、parse_expenses(口述多筆付費)、update_split(說明某筆怎麼分)、extract_receipt(讀收據品項)。',
     '重要規則:',
     '1. 使用者口述常有同音錯字與數字誤聽(「75」「七十五」「七五」可能是同一個數字),請結合照片判斷。',
     '2. 收據或照片讀不清楚就標記(放入 confidence_notes、unclear 或 questions),不要猜。',
@@ -216,6 +272,8 @@ export function buildSystem(today, categories) {
     '9. 使用者追問或更正時,請重新呼叫適當的工具,輸出完整內容(不是只輸出差異)。',
     '10. extract_table:忠實照抄,不要猜、不要補、不要計算;合併儲存格只在第一格填值並在 notes 說明;數量/金額欄輸出數字,編號/電話/日期等保持字串(保留前導 0);手寫或模糊不確定的格子必須列入 unreadable(sheet、row、col、reason),格內先填你最佳判讀或留空。多張照片或多頁 PDF 依使用者指示合併成同一工作表續接(只保留一份表頭)或每張一個工作表。使用者要求修改時,依「目前表格」內容回傳完整修正後的表格。',
     '11. extract_menu:忠實照抄品名與價格,不要猜、不要補。照片沒有列冰度或糖度時,ice_levels / sugar_levels 回傳空陣列,不要自創(由程式套用台灣常用預設)。大小以照片為準(常見 M/L 或 中/大)。多張照片是同一份菜單的不同頁,請合併成一份。看不清楚的品項或價格寫進 unreadable,不要猜。',
+    '12. parse_expenses:忠實照抄人名與金額,不計算分攤。口述的數字可能是「一千零二十四」「1024」「一零二四」,轉成整數。使用者沒說誰分攤就不要填 participants(視為全員)。人名可能同音錯字,相近的人名請歸併成同一個並用 questions 向使用者確認。',
+    '13. update_split:使用者說「冰棒小凱沒吃,小新吃兩份」這類說明時,輸出參與者/份數/各人金額/品項歸屬;不要自己加總或分攤。extract_receipt:收據讀不清楚的品項寫進 unreadable,不要猜。',
   ].join('\n');
 }
 

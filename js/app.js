@@ -2,6 +2,7 @@ import * as DB from './db.js';
 import * as AI from './ai.js';
 import * as Files from './ui_files.js';
 import * as MenuUI from './ui_menu.js';
+import * as LedgerUI from './ui_ledger.js';
 import { openRoomJoin } from './ui_room.js';
 import { parseRoomParams, getNet } from './netctx.js';
 import { validDbUrl } from './net.js';
@@ -11,7 +12,7 @@ const MAX_FILE = 20 * 1024 * 1024;
 const MAX_FILE_BYTES = MAX_FILE;
 
 /* ---------- 小工具 ---------- */
-const DEFAULT_CATS = ['餐飲', '超市/日用', '交通', '購物', '醫療', '娛樂', '居家', '教育', '其他'];
+const DEFAULT_CATS = ['餐飲', '超市/日用', '交通', '購物', '醫療', '娛樂', '居家', '教育', '旅遊', '其他'];
 const PAYMENTS = ['現金', '信用卡', '行動支付', '轉帳', '其他'];
 const MODES = [['auto', '自動判斷'], ['expense', '記帳'], ['split', '分帳'], ['translate', '翻譯'], ['plant', '辨識植物'], ['calc', '算數字']];
 const PERIOD_LABELS = [['day', '日'], ['week', '週'], ['month', '月'], ['quarter', '季'], ['half', '半年'], ['year', '年']];
@@ -69,7 +70,7 @@ function mdToHtml(text) {
 function getSettings() {
   let s = {};
   try { s = JSON.parse(localStorage.getItem('pt_settings') || '{}'); } catch (_) { s = {}; }
-  return Object.assign({ apiKey: '', proxyUrl: '', model: 'claude-sonnet-5-5', classifyModel: 'claude-haiku-5-5', locationEnabled: true, dbUrl: '', useMock: false, myName: '我', categories: DEFAULT_CATS.slice() }, s);
+  return Object.assign({ apiKey: '', proxyUrl: '', model: 'claude-sonnet-5-5', classifyModel: 'claude-haiku-5-5', locationEnabled: true, dbUrl: '', useMock: false, myName: '我', myAccount: '', categories: DEFAULT_CATS.slice() }, s);
 }
 const hasAiKey = s => !!((s.apiKey || '').trim() || (s.proxyUrl || '').trim());
 // AI 分析是否啟用:未明確設定時,有金鑰/中轉就開、沒有就關
@@ -92,6 +93,8 @@ function pushScreen(title, build, onClose) {
   return entry;
 }
 function popScreen() {
+  const cur = stack[stack.length - 1];
+  if (cur && cur.beforeClose && cur.beforeClose() === false) return;   // 例如匯出預覽尚未下載時要先確認
   const t = stack.pop();
   if (!t) return;
   if (t.onClose) t.onClose();
@@ -171,6 +174,8 @@ function renderHome() {
   mainEl.append(el('div', { class: 'cam' },
     home.video, home.fallbackBox, home.flash,
     el('div', { class: 'cam-top' }, home.pendingChip, el('div', { class: 'grow' }),
+      el('button', { class: 'cam-btn', id: 'btnStats', 'aria-label': '我的旅行', onclick: () => LedgerUI.openMyStats() }, '📊'),
+      el('button', { class: 'cam-btn', id: 'btnTrips', 'aria-label': '分帳記事本', onclick: () => LedgerUI.openTripList() }, '🧾'),
       el('button', { class: 'cam-btn', id: 'btnOrder', 'aria-label': '開團點餐', onclick: () => MenuUI.openOrderHub() }, '🍹'),
       el('button', { class: 'cam-btn', id: 'btnFiles', 'aria-label': '檔案', onclick: () => Files.openFiles() }, '📁'),
       el('button', { class: 'cam-btn', id: 'btnLedger', 'aria-label': '記帳本', onclick: openLedger }, '📒'),
@@ -1162,6 +1167,7 @@ async function renderSettingsTab(root) {
   const model = el('input', { type: 'text', id: 'setModel', value: s.model });
   const cmodel = el('input', { type: 'text', id: 'setCModel', value: s.classifyModel });
   const me = el('input', { type: 'text', id: 'setMe', value: s.myName });
+  const acct = el('input', { type: 'text', id: 'setAccount', value: s.myAccount || '', placeholder: '(選填)純本機顯示,App 沒有登入系統' });
   const dbUrl = el('input', { type: 'url', id: 'setDb', value: s.dbUrl || '', placeholder: 'https://你的專案-default-rtdb.firebaseio.com' });
   const mockCb = el('input', { type: 'checkbox', id: 'setMock', checked: !!s.useMock, style: 'width:22px;height:22px' });
   const cats = el('textarea', { id: 'setCats', rows: 3 }, s.categories.join('、'));
@@ -1181,13 +1187,14 @@ async function renderSettingsTab(root) {
       el('button', { class: 'btn', id: 'btnExportAll', onclick: () => exportData(false) }, '匯出全部檔案'),
       el('button', { class: 'btn', id: 'btnExportAllPhotos', onclick: () => exportData(true) }, '匯出全部(含照片)'),
       el('label', { class: 'btn' }, '匯入', el('input', { type: 'file', accept: 'application/json,.json', class: 'hidden', id: 'importFile2', onchange: importData }))),
+    ...f('我的帳號 ID/暱稱', acct, '只存在這支手機、只用來顯示;不會上傳,也沒有登入。'),
     ...f('我的名稱', me, '新記帳的付款人預設值;報表的「我/家人」也依此判斷。'),
     ...f('分類(用「、」或逗號分隔)', cats),
     el('button', { class: 'btn primary block', id: 'btnSaveSettings', style: 'margin-top:12px', onclick: () => {
       const dbv = dbUrl.value.trim();
       if (dbv && !validDbUrl(dbv)) { alert('資料庫網址格式不對(需為 https://…firebaseio.com 或 …firebasedatabase.app)'); return; }
       const cl = cats.value.split(/[、,，\n]/).map(x => x.trim()).filter(Boolean);
-      saveSettings({ aiEnabled: (hasAiKey(s) !== hasAiKey({ apiKey: api.value, proxyUrl: proxy.value }) || aiCb.checked === hasAiKey({ apiKey: api.value, proxyUrl: proxy.value })) ? undefined : aiCb.checked, apiKey: api.value.trim(), proxyUrl: proxy.value.trim(), model: model.value.trim() || 'claude-sonnet-5-5', classifyModel: cmodel.value.trim() || 'claude-haiku-5-5', locationEnabled: locOn.checked, dbUrl: dbv, useMock: mockCb.checked, myName: me.value.trim() || '我', categories: cl.length ? cl : DEFAULT_CATS.slice() });
+      saveSettings({ aiEnabled: (hasAiKey(s) !== hasAiKey({ apiKey: api.value, proxyUrl: proxy.value }) || aiCb.checked === hasAiKey({ apiKey: api.value, proxyUrl: proxy.value })) ? undefined : aiCb.checked, apiKey: api.value.trim(), proxyUrl: proxy.value.trim(), model: model.value.trim() || 'claude-sonnet-5-5', classifyModel: cmodel.value.trim() || 'claude-haiku-5-5', locationEnabled: locOn.checked, myAccount: acct.value.trim(), dbUrl: dbv, useMock: mockCb.checked, myName: me.value.trim() || '我', categories: cl.length ? cl : DEFAULT_CATS.slice() });
       alert('已儲存');
     } }, '儲存設定')));
   root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '多功能拍照工具 v3'));

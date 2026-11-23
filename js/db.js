@@ -1,6 +1,6 @@
-// IndexedDB:expenses(帳本)、photos(照片 Blob)、pending(離線排隊的分析請求)、files(檔案紀錄)、menus(菜單範本)、rooms(我開過的團)
+// IndexedDB:expenses(帳本)、photos(照片 Blob)、pending(離線排隊的分析請求)、files(檔案紀錄)、menus(菜單範本)、rooms(我開過的團)、trips(分帳記事本活動)
 const DB_NAME = 'phototool';
-const DB_VER = 2;
+const DB_VER = 3;
 let dbp = null;
 
 function open() {
@@ -12,7 +12,7 @@ function open() {
       if (!db.objectStoreNames.contains('expenses')) db.createObjectStore('expenses', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('photos')) db.createObjectStore('photos', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('pending')) db.createObjectStore('pending', { keyPath: 'id' });
-      ['files', 'menus', 'rooms'].forEach(n => { if (!db.objectStoreNames.contains(n)) db.createObjectStore(n, { keyPath: n === 'rooms' ? 'code' : 'id' }); });
+      ['files', 'menus', 'rooms', 'trips'].forEach(n => { if (!db.objectStoreNames.contains(n)) db.createObjectStore(n, { keyPath: n === 'rooms' ? 'code' : 'id' }); });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -66,3 +66,8 @@ export const allRooms = () => tx('rooms', 'readonly', s => s.getAll());
 export const getRoom = code => tx('rooms', 'readonly', s => s.get(code));
 export const putRoom = rec => tx('rooms', 'readwrite', s => s.put(rec));
 export const deleteRoom = code => tx('rooms', 'readwrite', s => s.delete(code));
+
+export const allTrips = () => tx('trips', 'readonly', s => s.getAll());
+export const getTrip = id => tx('trips', 'readonly', s => s.get(id));
+export const putTrip = rec => tx('trips', 'readwrite', s => s.put(rec));
+export const deleteTrip = id => tx('trips', 'readwrite', s => s.delete(id));

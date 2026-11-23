@@ -4,8 +4,9 @@ import * as DB from './db.js';
 import { el, today, pad2, pushScreen, popScreen, getSettings } from './app.js';
 import { getNet, roomUrl } from './netctx.js';
 import { STATUS_TEXT } from './net.js';
+import { exportSheet } from './ui_export.js';
 
-const { Menu, Order, QR } = window;
+const { Menu, Order, QR, Sheets } = window;
 const fmtTime = ms => { const d = new Date(ms); return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
 const bigBtn = (icon, text, onclick, cls, id) => el('button', { class: 'big-btn ' + (cls || ''), id, onclick }, el('span', { class: 'bi' }, icon), el('span', { class: 'bt' }, text));
 const money = n => '$' + Order.toInt(n);
@@ -26,7 +27,7 @@ export async function copyText(text) {
     setTimeout(() => { ta.focus(); ta.select(); }, 50);
   });
 }
-async function shareText(text, title) {
+export async function shareText(text, title) {
   if (navigator.share) { try { await navigator.share({ text, title }); return; } catch (e) { if (e && e.name === 'AbortError') return; } }
   await copyText(text);
 }
@@ -193,7 +194,8 @@ function openRoomView(o) {
       p.orders.forEach((x, i) => box.append(orderRow(x, i + 1, multi ? Order.shopTag((Order.findMenu(ms, x.menuId) || {}).shop) : '', host && isOpen() ? { onDelete: async () => { if (!confirm('刪除 ' + p.display + ' 的「' + Order.optionLabel(x) + '」?')) return; try { await net.deleteOrder(o.code, x.id, { clientId: me, hostToken: o.token }); } catch (e) { alert(e.message); } } } : null)));
     });
     content.append(box, el('div', { class: 'total-row big' }, el('span', {}, '共 ' + Order.cupCount(st.orders) + ' 杯'), el('b', { id: 'grandTotal' }, '合計 ' + money(Order.grandTotal(st.orders)))),
-      el('div', { class: 'act-row' }, bigBtn('📋', '複製文字', () => copyText(text), 'primary', 'copyCust'), bigBtn('📤', '分享', () => shareText(text, title()), '', 'shareCust')));
+      el('div', { class: 'act-row' }, bigBtn('📋', '複製文字', () => copyText(text), 'primary', 'copyCust'), bigBtn('📤', '分享', () => shareText(text, title()), '', 'shareCust')),
+      exportSheet(() => Sheets.customer(title(), dateStr(), st.orders, menusN())));
   }
 
   /* --- 店員清單(發起人) --- */
@@ -224,7 +226,7 @@ function openRoomView(o) {
       sec.append(bigBtn('📋', ms.length > 1 ? '複製「' + Order.shopTag(pt.shop) + '」店員文字' : '複製店員文字', () => copyText(pt.text), 'primary', 'copyClerk'));
       wrap.append(sec);
     });
-    content.append(wrap, el('div', { class: 'muted small' }, '點一列可展開是誰點的;複製的文字不含名字。'));
+    content.append(wrap, el('div', { class: 'muted small' }, '點一列可展開是誰點的;複製的文字不含名字。'), exportSheet(() => Sheets.clerk(menusN(), st.orders, clerkSort, byGroup, title())));
   }
 
   /* --- 團資訊(發起人) --- */

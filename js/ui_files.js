@@ -1,6 +1,7 @@
 // 檔案紀錄:轉 Excel 結果「儲存」、列表、再編輯、分享(LINE/雲端硬碟…)
 // 與 app.js 循環匯入:只在函式內使用,不在模組頂層呼叫
 import * as DB from './db.js';
+import { exportSheet } from './ui_export.js';
 import { el, uuid, today, pushScreen, popScreen, makeTable, tableToJson, tableCard, fileBase, anchorDownload, thumbImg, isPdf } from './app.js';
 
 const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -81,7 +82,7 @@ function openFileDetail(id) {
     const photos = el('div');
     (rec.photos || []).forEach(b => { if (isPdf(b)) { photos.append(el('div', { class: 'muted small' }, '(PDF 原檔 ' + Math.round(b.size / 1024) + ' KB)')); return; } const u = URL.createObjectURL(b); urls.push(u); photos.append(el('img', { class: 'photo-view', src: u, alt: '原圖' })); });
     entry.onClose = () => urls.forEach(u => URL.revokeObjectURL(u));
-    body.append(box, el('label', { class: 'f' }, '原圖'), photos,
+    body.append(box, el('h3', {}, '匯出'), exportSheet(() => window.Sheets.table(it.title || '表格', it.sheets.map(s => ({ name: s.name, columns: s.columns, rows: s.rows })))), el('label', { class: 'f' }, '原圖'), photos,
       el('button', { class: 'btn danger block', id: 'fileDelete', style: 'margin-top:14px', onclick: async () => { if (confirm('確定刪除這個檔案(含原圖)?')) { await DB.deleteFile(id); popScreen(); } } }, '刪除檔案'));
   });
 }
