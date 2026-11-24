@@ -10,6 +10,8 @@ import { pasteIntake } from './ui_paste.js';
 import { openRoomJoin } from './ui_room.js';
 import { parseRoomParams, getNet } from './netctx.js';
 import { validDbUrl } from './net.js';
+import { FEATURES } from './config.js';
+import { startJournalApp } from './ui_jhome.js';
 
 const { Split, Aggregate, Reconcile, Xlsx } = window;
 const MAX_FILE = 20 * 1024 * 1024;
@@ -19,6 +21,11 @@ const MAX_FILE_BYTES = MAX_FILE;
 const DEFAULT_CATS = ['餐飲', '超市/日用', '交通', '購物', '醫療', '娛樂', '居家', '教育', '旅遊', '其他'];
 const PAYMENTS = ['現金', '信用卡', '行動支付', '轉帳', '其他'];
 const { Modes, Tabletext, SaveBar, Guide, KeepPhoto, Receipt, Ledger } = window;
+// 功能旗標(v10):預設在 config.js,覆寫用 ?flags=+camera,-ai 或 localStorage['pt_flags']
+const flagRes = window.Flags.applyQuery(location.search, localStorage);
+if (flagRes.changed) history.replaceState(null, '', location.pathname + flagRes.clean + location.hash);
+const featureOn = name => window.Flags.isOn(name, FEATURES, flagRes.overrides);
+const journalMode = featureOn('journal');
 const PERIOD_LABELS = [['day', '日'], ['week', '週'], ['month', '月'], ['quarter', '季'], ['half', '半年'], ['year', '年']];
 
 function el(tag, props, ...kids) {
@@ -74,7 +81,7 @@ function mdToHtml(text) {
 function getSettings() {
   let s = {};
   try { s = JSON.parse(localStorage.getItem('pt_settings') || '{}'); } catch (_) { s = {}; }
-  return Object.assign({ apiKey: '', proxyUrl: '', model: 'claude-sonnet-5-5', classifyModel: 'claude-haiku-5-5', locationEnabled: true, dbUrl: '', useMock: false, myName: '我', myAccount: '', mediaStore: 'local', googleClientId: '', deleteLocalAfterUpload: false, keepPhotos: false, categories: DEFAULT_CATS.slice() }, s);
+  return Object.assign({ apiKey: '', proxyUrl: '', model: 'claude-sonnet-5-5', classifyModel: 'claude-haiku-5-5', locationEnabled: true, dbUrl: '', fbApiKey: '', useMock: false, myName: '我', myAccount: '', mediaStore: 'local', googleClientId: '', deleteLocalAfterUpload: false, keepPhotos: false, categories: DEFAULT_CATS.slice() }, s);
 }
 const hasAiKey = s => !!((s.apiKey || '').trim() || (s.proxyUrl || '').trim());
 // AI 分析是否啟用:未明確設定時,有金鑰/中轉就開、沒有就關
@@ -382,6 +389,7 @@ async function shoot() {
 }
 
 function onScreensChange() {
+  if (journalMode) return;   // 旅遊日誌模式不啟動相機
   if (stack.length) stopCamera();
   else { cam.suppress = false; homeRefresh(); startCamera(); }
 }
@@ -1363,48 +1371,52 @@ async function renderSettingsTab(root, entry) {
   const me = el('input', { type: 'text', id: 'setMe', value: s.myName });
   const acct = el('input', { type: 'text', id: 'setAccount', value: s.myAccount || '', placeholder: '(選填)純本機顯示,App 沒有登入系統' });
   const dbUrl = el('input', { type: 'url', id: 'setDb', value: s.dbUrl || '', placeholder: 'https://你的專案-default-rtdb.firebaseio.com' });
+  const fbKey = el('input', { type: 'text', id: 'setFbKey', value: s.fbApiKey || '', placeholder: 'AIza…', autocomplete: 'off' });
+  const gcid = el('input', { type: 'text', id: 'setGcid', value: s.googleClientId || '', placeholder: '123456789-xxxx.apps.googleusercontent.com', autocomplete: 'off' });
   const mockCb = el('input', { type: 'checkbox', id: 'setMock', checked: !!s.useMock, style: 'width:22px;height:22px' });
   const cats = el('textarea', { id: 'setCats', rows: 3 }, s.categories.join('、'));
   cats.value = s.categories.join('、');
   const f = (l, n, hint) => [el('label', { class: 'f' }, l), n, hint ? el('div', { class: 'muted small' }, hint) : null];
   const aiNow = aiOn(s);
-  root.append(el('div', { class: 'card', id: 'aiStatusCard' },
+  if (featureOn('ai')) root.append(el('div', { class: 'card', id: 'aiStatusCard' },
     el('div', { class: 'row' }, el('b', { class: 'grow' }, 'AI 讀照片'), el('span', { class: 'tag ' + (aiNow ? 'ok' : 'warn'), id: 'aiStatusTag' }, aiNow ? '已啟用' : '未啟用')),
     el('div', { class: 'muted', id: 'aiStatusText' }, aiNow ? '拍照後 AI 會自動讀出內容,你只要核對。' : '未啟用:無法自動讀取照片,記帳/表格等仍可手動使用。'),
     el('div', { class: 'muted small' }, '一般收據一筆約 US$0.015、約 NT$0.45(估算)。'),
     el('div', { class: 'row wrap', style: 'margin-top:8px' }, el('button', { class: 'btn', id: 'aiHelpBtn', onclick: () => openAiHelp() }, aiNow ? '費用與說明' : '怎麼啟用?'), el('button', { class: 'btn', id: 'reOnboard', onclick: () => { Guide.resetOnboarding(localStorage); openOnboarding(); } }, '重看新手引導'))));
   const keepCb = el('input', { type: 'checkbox', id: 'setKeepPhotos', checked: !!s.keepPhotos, style: 'width:22px;height:22px' });
   const mainCard = el('div', { class: 'card', id: 'settingsMain' },
-    el('label', { class: 'row', style: 'margin:0 0 8px' }, aiCb, 'AI 分析(關閉時全部手動操作,不呼叫 AI)'),
-    ...f('Anthropic API 金鑰', api, '只存在這支手機本機。僅測試用,勿在公用裝置輸入。'),
-    ...f('中轉網址 Proxy URL', proxy, '格式同 messages API,不帶金鑰;未填則直連 api.anthropic.com。'),
-    ...f('主流程模型名稱', model),
-    ...f('分類用模型名稱(較小、較省)', cmodel),
-    el('label', { class: 'row', style: 'margin:12px 0 0' }, locOn, '拍照時記錄位置(被拒絕會自動略過)'),
-    el('label', { class: 'row', style: 'margin:12px 0 0' }, keepCb, '📎 保留照片(預設關:照片只用來對照,儲存時不寫入;每一筆儲存時可個別開啟)'),
+    ...(featureOn('ai') ? [el('label', { class: 'row', style: 'margin:0 0 8px' }, aiCb, 'AI 分析(關閉時全部手動操作,不呼叫 AI)'),
+      ...f('Anthropic API 金鑰', api, '只存在這支手機本機。僅測試用,勿在公用裝置輸入。'),
+      ...f('中轉網址 Proxy URL', proxy, '格式同 messages API,不帶金鑰;未填則直連 api.anthropic.com。'),
+      ...f('主流程模型名稱', model),
+      ...f('分類用模型名稱(較小、較省)', cmodel)] : []),
+    ...(featureOn('camera') ? [el('label', { class: 'row', style: 'margin:12px 0 0' }, locOn, '拍照時記錄位置(被拒絕會自動略過)'),
+      el('label', { class: 'row', style: 'margin:12px 0 0' }, keepCb, '📎 保留照片(預設關:照片只用來對照,儲存時不寫入;每一筆儲存時可個別開啟)')] : []),
     el('div', { class: 'muted small', id: 'persistInfo' }, '持久儲存:' + persisted),
-    ...f('點餐用資料庫網址(Firebase Realtime Database)', dbUrl, '開團需要。填你自己的 Firebase 專案網址,步驟見「Firebase設定步驟.md」。App 不內建網址。連結取得者可在結單前新增/修改訂單;發起人身分僅由 App 判斷,不要把點餐連結公開張貼到不信任的場合。'),
+    ...f('Google 用戶端 ID(選填,綁定 Google 用)', gcid, '公開識別碼不是密碼;步驟見「Firebase設定步驟.md」第八節。'),
+    ...f('Firebase 網頁 API 金鑰(AIza…)', fbKey, '官方說明這不是秘密,但請只填你自己專案的。App 不內建任何金鑰。'),
+    ...f('資料庫網址(Firebase Realtime Database)', dbUrl, '開團需要。填你自己的 Firebase 專案網址,步驟見「Firebase設定步驟.md」。App 不內建網址。連結取得者可在結單前新增/修改訂單;發起人身分僅由 App 判斷,不要把點餐連結公開張貼到不信任的場合。'),
     el('details', { class: 'adv', id: 'advBox' }, el('summary', {}, '進階'), el('label', { class: 'row', style: 'margin:8px 0 0' }, mockCb, '測試模式(假連線,只有同一個瀏覽器的分頁互通,不經網路;一般使用請勿開啟)')),
     el('div', { class: 'row-btns' },
       el('button', { class: 'btn', id: 'btnExportAll', onclick: () => exportData(false) }, '匯出全部檔案'),
       el('button', { class: 'btn', id: 'btnExportAllPhotos', onclick: () => exportData(true) }, '匯出全部(含照片)'),
       el('label', { class: 'btn' }, '匯入', el('input', { type: 'file', accept: 'application/json,.json', class: 'hidden', id: 'importFile2', onchange: importData }))),
-    ...f('我的帳號 ID/暱稱', acct, '只存在這支手機、只用來顯示;不會上傳,也沒有登入。'),
-    ...f('我的名稱', me, '新記帳的付款人預設值;報表的「我/家人」也依此判斷。'),
-    ...f('分類(用「、」或逗號分隔)', cats),
+    ...(featureOn('ledger') ? [...f('我的帳號 ID/暱稱', acct, '只存在這支手機、只用來顯示;不會上傳,也沒有登入。'),
+      ...f('我的名稱', me, '新記帳的付款人預設值;報表的「我/家人」也依此判斷。'),
+      ...f('分類(用「、」或逗號分隔)', cats)] : []),
   );
   root.append(mainCard);
   const saveForm = async () => {
       const dbv = dbUrl.value.trim();
       if (dbv && !validDbUrl(dbv)) { alert('資料庫網址格式不對(需為 https://…firebaseio.com 或 …firebasedatabase.app)'); return false; }
       const cl = cats.value.split(/[、,，\n]/).map(x => x.trim()).filter(Boolean);
-      saveSettings(Object.assign({}, getSettings(), { aiEnabled: (hasAiKey(s) !== hasAiKey({ apiKey: api.value, proxyUrl: proxy.value }) || aiCb.checked === hasAiKey({ apiKey: api.value, proxyUrl: proxy.value })) ? undefined : aiCb.checked, apiKey: api.value.trim(), proxyUrl: proxy.value.trim(), model: model.value.trim() || 'claude-sonnet-5-5', classifyModel: cmodel.value.trim() || 'claude-haiku-5-5', locationEnabled: locOn.checked, keepPhotos: keepCb.checked, myAccount: acct.value.trim(), dbUrl: dbv, useMock: mockCb.checked, myName: me.value.trim() || '我', categories: cl.length ? cl : DEFAULT_CATS.slice() }));
+      saveSettings(Object.assign({}, getSettings(), { aiEnabled: (hasAiKey(s) !== hasAiKey({ apiKey: api.value, proxyUrl: proxy.value }) || aiCb.checked === hasAiKey({ apiKey: api.value, proxyUrl: proxy.value })) ? undefined : aiCb.checked, apiKey: api.value.trim(), proxyUrl: proxy.value.trim(), model: model.value.trim() || 'claude-sonnet-5-5', classifyModel: cmodel.value.trim() || 'claude-haiku-5-5', locationEnabled: locOn.checked, keepPhotos: keepCb.checked, myAccount: acct.value.trim(), dbUrl: dbv, fbApiKey: fbKey.value.trim(), googleClientId: gcid.value.trim(), useMock: mockCb.checked, myName: me.value.trim() || '我', categories: cl.length ? cl : DEFAULT_CATS.slice() }));
         return { where: '設定' };
   };
   const sbS = attachSaveBar(entry, { id: 'btnSaveSettings', onSave: saveForm });
   sbS.trackInputs(mainCard);
-  root.append(CloudUI.mediaCard());
-  root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '多功能拍照工具 v8'));
+  if (featureOn('cloud')) root.append(CloudUI.mediaCard());
+  root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '旅遊日誌 v10'));
 }
 
 /* ---------- 啟動 ---------- */
@@ -1415,12 +1427,15 @@ Media.initMedia({
 });
 Media.mediaApi().recover().catch(e => console.warn('上傳佇列復原失敗', e));
 Media.mediaApi().onChange(() => { if (!stack.length) homeRefresh(); });
-const roomParams = parseRoomParams(location.search);
+const roomParams = journalMode ? null : parseRoomParams(location.search);
 if (roomParams) cam.suppress = true;
-renderHome();
-if (roomParams) openRoomJoin(roomParams);
-else if (Guide.shouldShowOnboarding(localStorage)) openOnboarding();
-cleanupRooms();
+if (journalMode) { startJournalApp(mainEl).catch(e => { console.error(e); mainEl.textContent = '啟動失敗:' + e.message; }); }
+else {
+  renderHome();
+  if (roomParams) openRoomJoin(roomParams);
+  else if (Guide.shouldShowOnboarding(localStorage)) openOnboarding();
+  cleanupRooms();
+}
 if (navigator.storage && navigator.storage.persist) { navigator.storage.persist().catch(() => { /* 不影響主功能 */ }); }
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => { /* 離線功能不可用,不影響主功能 */ });
@@ -1438,4 +1453,4 @@ async function cleanupRooms() {
   } catch (e) { console.warn('清除過期房失敗', e.message); }
 }
 
-export { toast, attachSaveBar, keepSwitch, openHelp, openFuncMenu, goCamera, el, $, uuid, pad2, today, fmt, esc, pushScreen, popScreen, refreshTop, thumbImg, resizeImage, isPdf, anchorDownload, saveBlob, makeTable, tableToJson, tableCard, fileBase, getSettings, saveSettings, selectOf, openSettings, aiOn, photoStrip, MAX_FILE_BYTES };
+export { featureOn, toast, attachSaveBar, keepSwitch, openHelp, openFuncMenu, goCamera, el, $, uuid, pad2, today, fmt, esc, pushScreen, popScreen, refreshTop, thumbImg, resizeImage, isPdf, anchorDownload, saveBlob, makeTable, tableToJson, tableCard, fileBase, getSettings, saveSettings, selectOf, openSettings, aiOn, photoStrip, MAX_FILE_BYTES };

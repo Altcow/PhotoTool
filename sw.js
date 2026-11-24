@@ -1,4 +1,4 @@
-const VERSION = 'v8';
+const VERSION = 'v10';
 const CACHE = 'phototool-' + VERSION;
 const PRECACHE = [
   './',
@@ -6,6 +6,7 @@ const PRECACHE = [
   './manifest.webmanifest',
   './css/app.css',
   './css/v3.css',
+  './css/tj.css',
   './js/app.js',
   './js/db.js',
   './js/ai.js',
@@ -22,6 +23,13 @@ const PRECACHE = [
   './js/ui_cloud.js',
   './js/ui_paste.js',
   './js/cloud.js',
+  './js/auth.js',
+  './js/journalnet.js',
+  './js/tjctx.js',
+  './js/ui_login.js',
+  './js/ui_jhome.js',
+  './js/ui_journal.js',
+  './js/ui_account.js',
   './js/media.js',
   './js/lib/split.js',
   './js/lib/aggregate.js',
@@ -46,6 +54,11 @@ const PRECACHE = [
   './js/lib/savebar.js',
   './js/lib/guide.js',
   './js/lib/keepphoto.js',
+  './js/lib/flags.js',
+  './js/lib/journal.js',
+  './js/lib/authrest.js',
+  './js/lib/rules_tj.js',
+  './js/lib/policy.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
 ];

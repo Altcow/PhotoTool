@@ -1,6 +1,6 @@
-// IndexedDB:expenses(帳本)、photos(照片 Blob)、pending(離線排隊的分析請求)、files(檔案紀錄)、menus(菜單範本)、rooms(我開過的團)、trips(分帳記事本活動)、uploads(雲端上傳佇列)
+// IndexedDB:jcache(旅遊日誌離線快取)、expenses(帳本)、photos(照片 Blob)、pending(離線排隊的分析請求)、files(檔案紀錄)、menus(菜單範本)、rooms(我開過的團)、trips(分帳記事本活動)、uploads(雲端上傳佇列)
 const DB_NAME = 'phototool';
-const DB_VER = 4;
+const DB_VER = 5;
 let dbp = null;
 
 function open() {
@@ -13,6 +13,7 @@ function open() {
       if (!db.objectStoreNames.contains('photos')) db.createObjectStore('photos', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('pending')) db.createObjectStore('pending', { keyPath: 'id' });
       ['files', 'menus', 'rooms', 'trips', 'uploads'].forEach(n => { if (!db.objectStoreNames.contains(n)) db.createObjectStore(n, { keyPath: n === 'rooms' ? 'code' : 'id' }); });
+      if (!db.objectStoreNames.contains('jcache')) db.createObjectStore('jcache', { keyPath: 'jid' });   // v10 旅遊日誌快取(只新增)
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -79,3 +80,8 @@ export const allPhotoRecs = () => tx('photos', 'readonly', s => s.getAll());
 export const allUploads = () => tx('uploads', 'readonly', s => s.getAll());
 export const putUpload = e => tx('uploads', 'readwrite', s => s.put(e));
 export const deleteUpload = id => tx('uploads', 'readwrite', s => s.delete(id));
+
+// 旅遊日誌快取:{jid, data, at};jid='__home' 放首頁清單
+export const getJCache = jid => tx('jcache', 'readonly', s => s.get(jid));
+export const putJCache = rec => tx('jcache', 'readwrite', s => s.put(rec));
+export const deleteJCache = jid => tx('jcache', 'readwrite', s => s.delete(jid));
