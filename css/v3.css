@@ -211,3 +211,23 @@ table.tbl.ro td.n { text-align: right; }
 .export-body .sticky-act { flex-direction: row; gap: 6px; }
 .export-body .sticky-act .big-btn { min-height: 52px; font-size: 14px; padding: 6px 4px; gap: 4px; flex: 1; width: auto; flex-direction: column; }
 .export-body .sticky-act .big-btn .bi { font-size: 20px; }
+
+/* v6:相機模式列與 AI 提示 */
+.cam-modes { width: 100%; display: flex; flex-direction: column; gap: 4px; }
+.mode-row { display: flex; gap: 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; padding: 2px 2px 4px; touch-action: pan-x; }
+.mode-row::-webkit-scrollbar { display: none; }
+.mode-chip { flex: 0 0 auto; min-height: 44px; padding: 6px 14px; border-radius: 999px; border: 2px solid rgba(255,255,255,.4); background: rgba(0,0,0,.5); color: #fff; font: inherit; font-size: 16px; font-weight: 600; white-space: nowrap; }
+.mode-chip.on { background: #fff; color: #000; border-color: #fff; }
+.mode-chip small { font-size: 11px; margin-left: 5px; padding: 1px 6px; border-radius: 6px; background: #f59e0b; color: #000; font-weight: 700; }
+.mode-desc { color: #fff; font-size: 14px; text-align: center; min-height: 22px; text-shadow: 0 1px 2px #000a; }
+.mode-desc .btn { min-height: 32px; padding: 2px 10px; }
+.cam-notice { position: absolute; left: 10px; right: 10px; top: calc(66px + env(safe-area-inset-top)); z-index: 3; display: flex; align-items: center; gap: 8px; background: rgba(180,83,9,.94); color: #fff; border-radius: 10px; padding: 6px 10px; font-size: 14px; line-height: 1.3; }
+.cam-notice .nt { flex: 1; }
+.cam-notice .btn { min-height: 34px; padding: 2px 12px; flex: 0 0 auto; }
+@media (orientation: landscape) {
+  .cam-modes { position: fixed; left: 0; right: calc(150px + env(safe-area-inset-right)); bottom: 0; padding: 6px 10px calc(6px + env(safe-area-inset-bottom)); background: linear-gradient(transparent, rgba(0,0,0,.65)); z-index: 2; width: auto; }
+  .cam-notice { right: calc(160px + env(safe-area-inset-right)); }
+}
+ol.steps { padding-left: 22px; margin: 6px 0 10px; }
+ol.steps li { margin: 6px 0; }
+#aiStatusCard .muted { margin-top: 2px; }

@@ -96,6 +96,7 @@ export function openMenuBuilder(initBlobs, opts) {
     if (!aiOn(settings)) goAI.classList.add('hidden');
     else if (opts.auto && blobs.length) setTimeout(() => goAI.click(), 0);
     body.append(
+      opts.note && !aiOn(settings) ? el('div', { class: 'banner warn', id: 'noAiNote' }, opts.note) : null,
       el('div', { class: 'two-col' },
         el('div', {}, el('label', { class: 'f' }, '菜單照片(多張/多頁會合併,最多 4 張)'), strip,
           el('div', { class: 'row' },

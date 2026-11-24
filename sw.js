@@ -1,4 +1,4 @@
-const VERSION = 'v5';
+const VERSION = 'v6';
 const CACHE = 'phototool-' + VERSION;
 const PRECACHE = [
   './',
@@ -39,6 +39,8 @@ const PRECACHE = [
   './js/lib/drive.js',
   './js/lib/uploadq.js',
   './js/lib/cloudgate.js',
+  './js/lib/modes.js',
+  './js/lib/tabletext.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
 ];

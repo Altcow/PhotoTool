@@ -17,7 +17,7 @@ const MAX_FILE_BYTES = MAX_FILE;
 /* ---------- 小工具 ---------- */
 const DEFAULT_CATS = ['餐飲', '超市/日用', '交通', '購物', '醫療', '娛樂', '居家', '教育', '旅遊', '其他'];
 const PAYMENTS = ['現金', '信用卡', '行動支付', '轉帳', '其他'];
-const MODES = [['auto', '自動判斷'], ['expense', '記帳'], ['split', '分帳'], ['translate', '翻譯'], ['plant', '辨識植物'], ['calc', '算數字']];
+const { Modes, Tabletext } = window;
 const PERIOD_LABELS = [['day', '日'], ['week', '週'], ['month', '月'], ['quarter', '季'], ['half', '半年'], ['year', '年']];
 
 function el(tag, props, ...kids) {
@@ -162,6 +162,7 @@ function renderHome() {
       try { compose.blobs.push(f.type === 'application/pdf' ? f : await resizeImage(f)); } catch (e) { alert('讀取檔案失敗'); }
     }
     homeRefresh();
+    if (!fromCam && files.length && compose.blobs.length) proceed();         // 相簿選圖/PDF:直接進入目前模式的流程
   };
   home.video = el('video', { class: 'cam-video', playsinline: true, muted: true, autoplay: true });
   home.video.muted = true;
@@ -173,10 +174,16 @@ function renderHome() {
   home.thumbs = el('div', { class: 'cam-thumbs', id: 'camThumbs' });
   home.shutter = el('button', { class: 'shutter', id: 'btnShutter', 'aria-label': '拍照', onclick: shoot });
   home.flip = el('button', { class: 'cam-btn', id: 'btnFlip', 'aria-label': '切換鏡頭', onclick: () => { cam.facing = cam.facing === 'environment' ? 'user' : 'environment'; startCamera(); } }, '🔄');
-  home.done = el('button', { class: 'btn primary hidden', id: 'btnDone', onclick: openActions }, '完成');
+  home.done = el('button', { class: 'btn primary hidden', id: 'btnDone', onclick: proceed }, '完成');
   home.flash = el('div', { class: 'cam-flash' });
+  home.aiBar = el('div', { class: 'cam-notice hidden', id: 'aiBar' }, el('span', { class: 'nt', id: 'aiBarText' }), el('button', { class: 'btn sm', id: 'aiBarBtn', onclick: () => openAiHelp() }, '啟用 AI'));
+  home.modeChips = el('div', { class: 'mode-row', id: 'modeRow' });
+  home.modeDesc = el('div', { class: 'mode-desc', id: 'modeDesc' });
+  home.modeBox = el('div', { class: 'cam-modes', id: 'camModes' }, home.modeChips, home.modeDesc);
+  home.mode = Modes.recall(localStorage, aiOn(getSettings()));
   mainEl.append(el('div', { class: 'cam' },
     home.video, home.fallbackBox, home.flash,
+    home.aiBar,
     el('div', { class: 'cam-top' }, home.pendingChip, home.uploadChip, el('div', { class: 'grow' }),
       el('button', { class: 'cam-btn', id: 'btnStats', 'aria-label': '我的旅行', onclick: () => LedgerUI.openMyStats() }, '📊'),
       el('button', { class: 'cam-btn', id: 'btnTrips', 'aria-label': '分帳記事本', onclick: () => LedgerUI.openTripList() }, '🧾'),
@@ -185,6 +192,7 @@ function renderHome() {
       el('button', { class: 'cam-btn', id: 'btnLedger', 'aria-label': '記帳本', onclick: openLedger }, '📒'),
       el('button', { class: 'cam-btn', id: 'btnSettings', 'aria-label': '設定', onclick: openSettings }, '⚙️')),
     el('div', { class: 'cam-bottom' },
+      home.modeBox,
       home.thumbs,
       el('div', { class: 'cam-ctl' },
         el('label', { class: 'cam-btn', 'aria-label': '從相簿選' }, '🖼', el('input', { type: 'file', accept: 'image/*,application/pdf', multiple: true, class: 'hidden', id: 'inpAlbum', onchange: ev => addFiles(ev, false) })),
@@ -194,8 +202,26 @@ function renderHome() {
   startCamera();
 }
 
+// 模式列與 AI 提示(依目前 AI 狀態重畫;設定改變後回到首頁會更新)
+function drawHomeChrome(blockedId) {
+  if (!home.modeChips) return;
+  const ai = aiOn(getSettings());
+  home.mode = Modes.resolveMode(home.mode, ai);
+  const bar = Modes.aiBar(ai);
+  home.aiBar.classList.toggle('hidden', !bar);
+  if (bar) { $('#aiBarText').textContent = bar.text; $('#aiBarBtn').textContent = bar.button; }
+  home.modeChips.replaceChildren(...Modes.MODES.map(m => el('button', { class: 'mode-chip' + (m.id === home.mode ? ' on' : ''), 'data-mode': m.id, 'aria-pressed': m.id === home.mode ? 'true' : 'false', onclick: () => {
+    if (!Modes.selectable(m.id, aiOn(getSettings()))) { drawHomeChrome(m.id); return; }
+    home.mode = m.id; Modes.remember(localStorage, m.id); drawHomeChrome();
+  } }, m.icon + ' ' + m.label, m.needsAi && !ai ? el('small', {}, 'AI') : null)));
+  const cur = Modes.byId(home.mode);
+  home.modeDesc.replaceChildren(blockedId ? el('span', { id: 'modeBlocked' }, Modes.AI_NEEDED_TEXT + ' ', el('button', { class: 'btn sm primary', id: 'modeGoSettings', onclick: () => openAiHelp() }, '去設定')) : el('span', { id: 'modeDescText' }, cur.desc));
+  const act = home.modeChips.querySelector('.mode-chip.on'); if (act && act.scrollIntoView) act.scrollIntoView({ inline: 'center', block: 'nearest' });
+}
+
 async function homeRefresh() {
   if (!home.thumbs) return;
+  drawHomeChrome();
   const n = compose.blobs.length;
   home.thumbs.replaceChildren(...compose.blobs.map((b, i) => el('div', { class: 'thumb' },
     thumbImg(b, '照片' + (i + 1)),
@@ -269,85 +295,74 @@ async function processPending(p) {
   await openChat({ blobs: p.blobs, text: p.text, mode: p.mode, hint: p.hint, location: p.location, pendingId: p.id });
 }
 
-/* ---------- 2. 分類結果 + 動作選單 ---------- */
+/* ---------- 2. 拍照前先選模式:完成後直接進入該模式的流程(不再有分類與動作選單) ---------- */
 const KIND_LABEL = { receipt: '收據', menu: '菜單', bill_list: '帳單/明細', table: '表格', form: '表單', text_doc: '文件/文字', plant: '植物', object: '物品', screenshot: '螢幕截圖', other: '其他' };
-const ACTIONS = [
-  { id: 'expense', icon: '🧾', label: '記帳', desc: '讀取收據,核對後記入記帳本' },
-  { id: 'split', icon: '👥', label: '分帳/結帳', desc: '誰點什麼、服務費,算出每人應付' },
-  { id: 'calc', icon: '🧮', label: '計算', desc: '抽出照片中的數字,由程式加減乘除' },
-  { id: 'translate', icon: '🌐', label: '翻譯', desc: '翻譯照片上的文字' },
-  { id: 'excel', icon: '📊', label: '轉 Excel', desc: '把表格/表單/明細轉成可編輯的 Excel 檔' },
-  { id: 'menu', icon: '🍹', label: '做成點餐菜單', desc: '讀取菜單,存成範本並可開團讓大家點餐' },
-  { id: 'lookup', icon: '🔍', label: '查資料', desc: '辨識物件/植物等並給詳細資料' },
-  { id: 'other', icon: '💬', label: '其他', desc: '自由輸入或口述你的問題' },
-];
-const KIND_ACTIONS = {
-  receipt: ['expense', 'split', 'calc'], menu: ['menu', 'translate', 'lookup', 'calc'], bill_list: ['split', 'expense', 'excel', 'calc'],
-  table: ['excel', 'calc'], form: ['excel', 'calc'],
-  text_doc: ['translate', 'excel', 'calc'], plant: ['lookup'], object: ['lookup', 'other'], screenshot: ['other', 'translate'], other: ['other'],
-};
-const ACTION_ALIAS = { record: 'expense', record_expense: 'expense', expense: 'expense', split: 'split', split_bill: 'split', checkout: 'split', calc: 'calc', calculate: 'calc', translate: 'translate', excel: 'excel', xlsx: 'excel', table: 'excel', menu: 'menu', lookup: 'lookup', search: 'lookup', identify: 'lookup', other: 'other' };
-const AI_ONLY = ['translate', 'lookup', 'other'];
-const LANGS = ['繁體中文', '简体中文', 'English', '日本語', '한국어', 'Français', 'Español'];
 
-function openActions() {
+const honestNote = id => { const m = Modes.byId(id); return m && m.noAi ? el('div', { class: 'banner warn', id: 'noAiNote' }, m.noAi) : null; };
+
+// 有 AI:直接呼叫對應 tool(進對話頁,保留原有確認/衝突流程);沒有 AI:手動入口
+async function runMode(modeId, blobs, loc) {
+  const ai = aiOn(getSettings());
+  const fl = Modes.flow(modeId, ai);
+  if (fl.kind === 'blocked') { alert(Modes.AI_NEEDED_TEXT); return false; }
+  if (fl.kind === 'ai-menu') { MenuUI.openMenuBuilder(blobs, { auto: true }); return true; }
+  if (fl.kind === 'ai-auto') { openAuto(blobs, loc); return true; }
+  if (fl.kind === 'ai-chat') {
+    let hint = '';
+    if (modeId === 'translate') hint = '(請翻譯成繁體中文)';
+    if (modeId === 'table' && blobs.length > 1) hint = confirm('這 ' + blobs.length + ' 張照片是同一份表格的多頁嗎?\n按「確定」=合併成同一個工作表;按「取消」=每張各一個工作表。')
+      ? '(共 ' + blobs.length + ' 份檔案是同一表單的多頁,請合併成同一個工作表依序續接,只保留一份表頭)' : '(共 ' + blobs.length + ' 份檔案,請每份各一個工作表,sheets 依序對應)';
+    return openChat({ blobs, text: '', mode: fl.chatMode, hint, location: loc });
+  }
+  manualFlow(Modes.byId(modeId).manual, blobs, loc, () => { compose.blobs = []; compose.location = null; homeRefresh(); });
+  return true;
+}
+
+async function proceed() {
   const blobs = compose.blobs.slice();
   if (!blobs.length) return;
-  let used = false;
-  const settings = getSettings();
-  const ai = aiOn(settings);
-  pushScreen('要做什麼?', body => {
-    const statusBox = el('div', { class: 'card', id: 'classifyBox' }, el('span', { class: 'spin' }), ' 正在判斷照片內容…');
-    const list = el('div', { id: 'actionList' });
-    const text = el('textarea', { id: 'actText', placeholder: '想問什麼?點鍵盤上的麥克風可語音輸入(選填)' });
-    const multi = el('select', { id: 'actMulti', 'aria-label': '多張/多頁的處理方式' },
-      el('option', { value: 'merge' }, '合併成同一個工作表(同一表單的多頁)'), el('option', { value: 'each' }, '每張/每個檔案一個工作表'));
-    const lang = el('select', { id: 'actLang', 'aria-label': '翻譯目標語言' }, LANGS.map(l => el('option', { value: l }, l)));
-    body.append(el('div', { class: 'two-col act-cols' }, el('div', {},
-      el('div', { class: 'thumbs' }, blobs.map(b => el('div', { class: 'thumb' }, thumbImg(b, '照片')))),
-      statusBox, el('label', { class: 'f' }, '補充說明(選填)'), text,
-      el('label', { class: 'f' }, '翻譯目標語言(選翻譯時使用)'), lang,
-      ...(blobs.length > 1 ? [el('label', { class: 'f' }, '多張照片轉 Excel 時'), multi] : [])),
-      el('div', {}, el('h3', {}, '要拿這張照片做什麼?'), list)));
+  if (compose.locPending) await compose.locPending;
+  const loc = compose.location;
+  const mode = Modes.resolveMode(home.mode, aiOn(getSettings()));
+  const ok = await runMode(mode, blobs, loc);
+  // 對話流程成功開始後清掉暫存照片;手動流程由各自儲存後清除(取消則保留,方便重做)
+  if (ok && Modes.flow(mode, aiOn(getSettings())).kind === 'ai-chat') { compose.blobs = []; compose.location = null; }
+  if (ok && ['ai-menu', 'ai-auto'].includes(Modes.flow(mode, aiOn(getSettings())).kind)) { compose.blobs = []; compose.location = null; }
+}
 
-    const drawActions = recommended => {
-      const rec = recommended.filter((a, i) => recommended.indexOf(a) === i);
-      const order = rec.concat(ACTIONS.map(a => a.id).filter(id => !rec.includes(id)));
-      list.replaceChildren(...order.map(id => {
-        const a = ACTIONS.find(x => x.id === id);
-        const aiOnly = !ai && AI_ONLY.includes(id);
-        const manual = () => { if (compose.locPending) return compose.locPending.then(() => manualFlow(id, blobs, compose.location, () => { used = true; })); return manualFlow(id, blobs, compose.location, () => { used = true; }); };
-        return el('button', { class: 'act-btn' + (rec.includes(id) ? ' rec' : '') + (aiOnly ? ' dis' : ''), 'data-action': id, disabled: aiOnly, onclick: async () => {
-          if (!ai) { await manual(); return; }
-          if (id === 'menu') { MenuUI.openMenuBuilder(blobs, { auto: true }); return; }
-          let hint = id === 'translate' ? '(請翻譯成' + lang.value + ')' : '';
-          if (id === 'excel' && blobs.length > 1) hint = multi.value === 'each' ? '(共 ' + blobs.length + ' 份檔案,請每份各一個工作表,sheets 依序對應)' : '(共 ' + blobs.length + ' 份檔案是同一表單的多頁,請合併成同一個工作表依序續接,只保留一份表頭)';
-          if (compose.locPending) await compose.locPending;
-          const ok = await openChat({ blobs, text: text.value.trim(), mode: id, hint, location: compose.location });
-          if (ok) used = true;
-        } }, el('span', { class: 'act-ico' }, a.icon),
-        el('span', { class: 'grow' }, el('b', {}, a.label), el('span', { class: 'muted small', style: 'display:block' }, aiOnly ? '需要 AI 分析(設定頁可開啟)' : a.desc)),
-        rec.includes(id) ? el('span', { class: 'tag' }, '推薦') : null);
-      }));
+// 「自動」模式:先用小模型分類,再走對應模式。分類失敗時請使用者自己選
+function openAuto(blobs, loc) {
+  pushScreen('自動判斷', async body => {
+    const box = el('div', { class: 'card', id: 'autoBox' }, el('span', { class: 'spin' }), ' 正在判斷照片內容…');
+    body.append(box);
+    const manualPick = msg => {
+      box.replaceChildren(el('div', {}, msg), el('div', { class: 'big-grid two', style: 'margin-top:10px' }, Modes.MODES.filter(m => m.id !== 'auto' && Modes.selectable(m.id, true)).map(m => el('button', { class: 'big-btn', 'data-pick': m.id, onclick: () => { popScreen(); runMode(m.id, blobs, loc); } }, el('span', { class: 'bi' }, m.icon), el('span', { class: 'bt' }, m.label)))));
     };
-    drawActions([]);
+    if (!navigator.onLine) { manualPick('目前離線,無法自動判斷。請自己選功能:'); return; }
+    try {
+      const r = await AI.classifyPhotos(getSettings(), blobs);
+      const id = Modes.modeFromClassify(r);
+      box.replaceChildren(el('div', {}, '這看起來是:', el('b', {}, KIND_LABEL[r.kind] || '其他'), ' → ', Modes.byId(id).label));
+      setTimeout(() => { popScreen(); runMode(id, blobs, loc); }, 500);
+    } catch (e) { manualPick((e.code === 'NO_KEY' ? '尚未設定 API 金鑰或中轉網址。' : '判斷失敗:' + e.message + '。') + '請自己選功能:'); }
+  });
+}
 
-    (async () => {
-      if (!ai) { statusBox.textContent = 'AI 分析未啟用:請直接選動作,用手動方式完成。'; return; }
-      if (!navigator.onLine) { statusBox.textContent = '目前離線,略過自動分類,請直接選動作(送出後會排入待處理)。'; return; }
-      try {
-        const r = await AI.classifyPhotos(settings, blobs);
-        const kind = KIND_LABEL[r.kind] ? r.kind : 'other';
-        const sug = (r.suggested_actions || []).map(a => ACTION_ALIAS[a]).filter(Boolean);
-        statusBox.replaceChildren(...[el('div', {}, '這看起來是:', el('b', {}, KIND_LABEL[kind])), r.summary ? el('div', { class: 'muted' }, r.summary) : null,
-          r.detected && r.detected.numbers && r.detected.numbers.length ? el('div', { class: 'muted small' }, '偵測到數字:' + r.detected.numbers.slice(0, 8).join('、')) : null].filter(Boolean));
-        statusBox.dataset.kind = kind;
-        drawActions(sug.concat(KIND_ACTIONS[kind] || []));
-      } catch (e) {
-        statusBox.textContent = (e.code === 'NO_KEY' ? '尚未設定 API 金鑰或中轉網址(設定頁)' : '分類失敗:' + e.message) + '。仍可直接選動作。';
-      }
-    })();
-  }, () => { if (used) { compose.blobs = []; compose.location = null; } });
+// 如何啟用 AI 讀照片(首頁提示與設定頁共用)
+function openAiHelp() {
+  pushScreen('啟用 AI 讀照片', body => {
+    body.append(el('div', { class: 'card', id: 'aiHelp' },
+      el('b', {}, 'AI 讀照片是做什麼的?'),
+      el('p', {}, '拍收據、表格、菜單後,由 AI 自動讀出金額和內容,你只要核對。沒有啟用也能用,只是要自己手動填。'),
+      el('b', {}, '怎麼啟用'),
+      el('ol', { class: 'steps' },
+        el('li', {}, '到 Anthropic 官方網站的開發者主控台(Console)註冊並設定付款方式。畫面文字可能略有不同。'),
+        el('li', {}, '在主控台建立一把 API 金鑰,複製起來。'),
+        el('li', {}, '回到本 App「設定」,貼到「Anthropic API 金鑰」,打開「AI 分析」,按「儲存設定」。金鑰只存在這支手機。')),
+      el('b', {}, '費用估計'),
+      el('p', {}, '一般收據一筆約 US$0.015、約 NT$0.45(這是估算,實際會依照片大小、模型與匯率變動)。')),
+      el('button', { class: 'big-btn primary', id: 'aiHelpGo', onclick: () => { popScreen(); openSettings(); } }, el('span', { class: 'bi' }, '⚙️'), el('span', { class: 'bt' }, '前往設定')));
+  });
 }
 
 /* ---------- 對話頁 ---------- */
@@ -719,11 +734,11 @@ function photoStrip(blobs) {
   return el('div', { class: 'thumbs', id: 'refPhotos' }, blobs.map(b => el('div', { class: 'thumb ref' }, thumbImg(b, '參考照片'))));
 }
 function manualFlow(id, blobs, loc, onDone) {
-  if (id === 'expense') return openExpenseForm(null, { photos: blobs, location: loc, onSaved: onDone });
+  if (id === 'expense') return openExpenseForm(null, { photos: blobs, location: loc, onSaved: onDone, noAi: true });
   if (id === 'split') return openManualSplit(blobs, loc, onDone);
   if (id === 'calc') return openManualCalc(blobs);
-  if (id === 'excel') return openManualTable(blobs, loc);
-  if (id === 'menu') return MenuUI.openMenuBuilder(blobs);
+  if (id === 'table') return openManualTable(blobs, loc, onDone);
+  if (id === 'menu') return MenuUI.openMenuBuilder(blobs, { note: Modes.byId('menu').noAi });
 }
 
 function openManualCalc(blobs) {
@@ -740,7 +755,7 @@ function openManualCalc(blobs) {
       if (bad) alert(bad + ' 個項目不是數字,已留在輸入框');
       draw();
     };
-    body.append(photoStrip(blobs), el('label', { class: 'f' }, '數字'), ta,
+    body.append(honestNote('calc'), photoStrip(blobs), el('label', { class: 'f' }, '數字'), ta,
       el('button', { class: 'btn primary', id: 'calcAdd', onclick: add }, '加入'), box);
     draw();
   });
@@ -784,52 +799,54 @@ function openManualSplit(blobs, loc, onDone) {
       draw();
       resBox.scrollIntoView();
     } }, '算出每人應付');
-    body.append(photoStrip(blobs), el('label', { class: 'f' }, '人名'), peopleIn, el('label', { class: 'f' }, '品項與誰吃(點人名選擇)'), itemsBox,
+    body.append(honestNote('split'), photoStrip(blobs), el('label', { class: 'f' }, '人名'), peopleIn, el('label', { class: 'f' }, '品項與誰吃(點人名選擇)'), itemsBox,
       el('button', { class: 'btn sm', id: 'spAddItem', onclick: () => { st.items.push({ name: '', amount: '', who: new Set() }); drawItems(); } }, '＋ 品項'),
       el('label', { class: 'f' }, '服務費'), feeIn, el('label', { class: 'f' }, '收據總額'), totIn, calcBtn, resBox);
   });
 }
 
-function parsePasted(text) {
-  const lines = String(text).replace(/\r/g, '').split('\n').filter(l => l.trim() !== '');
-  const hasTab = lines.some(l => l.includes('\t'));
-  const split = l => {
-    if (hasTab) return l.split('\t');
-    const out = []; let cur = '', q = false;
-    for (let i = 0; i < l.length; i++) {
-      const ch = l[i];
-      if (q) { if (ch === '"') { if (l[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
-      else if (ch === '"' && !cur) q = true;
-      else if (ch === ',' || ch === ',') { out.push(cur); cur = ''; }
-      else cur += ch;
-    }
-    out.push(cur); return out;
-  };
-  return lines.map(split);
-}
-
 function openManualTable(blobs, loc) {
-  pushScreen('轉 Excel', body => {
+  pushScreen('表格', body => {
     const it = makeTable({ title: '', sheets: [{ name: '工作表1', columns: ['欄1', '欄2', '欄3'], rows: [['', '', ''], ['', '', ''], ['', '', '']] }] });
     it.photos = blobs.slice(); it.location = loc || null;
-    const box = el('div');
+    const box = el('div', { id: 'tblBox' });
     const draw = () => box.replaceChildren(tableCard(it, draw, true));
-    const ta = el('textarea', { id: 'tblPaste', rows: 4, placeholder: '貼上從 Excel/網頁複製的內容(以 Tab 分隔),或 CSV 文字' });
-    const head = el('input', { type: 'checkbox', id: 'tblPasteHead', checked: true, style: 'width:22px;height:22px' });
-    const paste = el('button', { class: 'btn primary', id: 'tblPasteBtn', onclick: () => {
-      const grid = parsePasted(ta.value);
-      if (!grid.length) { alert('沒有可貼入的內容'); return; }
-      const n = Math.max(...grid.map(r => r.length));
-      grid.forEach(r => { while (r.length < n) r.push(''); });
+    const urls = blobs.filter(b => !isPdf(b)).map(b => URL.createObjectURL(b));
+    const ta = el('textarea', { id: 'tblPaste', rows: 5, placeholder: '把照片上的字貼在這裡(可以用「掃描文字」),或貼上從 Excel/網頁複製的內容' });
+    const head = el('input', { type: 'checkbox', id: 'tblPasteHead', checked: true, style: 'width:22px;height:22px', onchange: () => preview() });
+    let delim = 'auto';
+    const delimBox = el('div', { class: 'chips', id: 'tblDelims' });
+    const info = el('div', { class: 'muted small', id: 'tblInfo' }), pv = el('div', { class: 'tbl-wrap', id: 'tblPreview' });
+    const drawDelims = () => delimBox.replaceChildren(...['auto'].concat(Tabletext.DELIMS).map(d => el('button', { class: 'chip' + (delim === d ? ' on' : ''), 'data-delim': d, onclick: () => { delim = d; drawDelims(); preview(); } }, Tabletext.LABELS[d])));
+    function parsed() { return Tabletext.parse(ta.value, { delimiter: delim, header: head.checked }); }
+    function preview() {
+      const p = parsed();
+      pv.replaceChildren(); info.textContent = '';
+      if (!p.rows.length) return;
+      info.textContent = '分欄方式:' + Tabletext.LABELS[p.used] + (delim === 'auto' ? '(自動判斷)' : '') + ' · ' + p.cols + ' 欄 · ' + (p.columns.length ? p.body.length : p.rows.length) + ' 列' + (p.numericCols.length ? ' · 數字欄:第 ' + p.numericCols.map(c => c + 1).join('、') + ' 欄' : '') + (p.warnings.length ? '\n' + p.warnings.join(' ') : '');
+      const rows = (p.columns.length ? p.body : p.rows).slice(0, 8);
+      pv.append(el('table', { class: 'tbl ro' }, p.columns.length ? el('tr', {}, p.columns.map(c => el('th', {}, c))) : null, rows.map(r => el('tr', {}, r.map((v, c) => el('td', { class: p.numericCols.includes(c) ? 'n' : '' }, v))))));
+    }
+    ta.addEventListener('input', preview);
+    const convert = el('button', { class: 'btn primary block', id: 'tblPasteBtn', onclick: () => {
+      const p = parsed();
+      if (!p.rows.length) { alert('還沒有文字可以變成表格。請先把照片上的字貼進上面的框。'); return; }
       const sh = it.sheets[0];
-      if (head.checked) { sh.columns = grid[0].slice(); sh.rows = grid.slice(1); } else { sh.columns = []; sh.rows = grid; }
+      if (p.columns.length) { sh.columns = p.columns.slice(); sh.rows = p.body.map(r => r.slice()); } else { sh.columns = []; sh.rows = p.body.map(r => r.slice()); }
       sh.hbad = sh.columns.map(() => ''); sh.bad = sh.rows.map(r => r.map(() => ''));
-      it.active = 0; ta.value = ''; draw();
-    } }, '貼入表格(會取代目前內容)');
-    body.append(photoStrip(blobs), el('label', { class: 'f' }, '貼上文字'), ta,
-      el('label', { class: 'row', style: 'margin:6px 0' }, head, '第一列是表頭'), paste, box);
-    draw();
-  });
+      it.active = 0; draw();
+      box.scrollIntoView({ block: 'start' });
+    } }, '把文字變成表格(會取代下面目前的內容)');
+    body.append(honestNote('table'),
+      el('div', { class: 'two-col' },
+        el('div', {}, el('label', { class: 'f' }, '照片(對照用)'), el('div', { id: 'tblPhotos' }, urls.length ? urls.map(u => el('img', { class: 'photo-view', src: u, alt: '照片' })) : el('div', { class: 'muted small' }, blobs.length ? '(PDF 檔,請另外開啟對照)' : '(沒有照片)'))),
+        el('div', {}, el('label', { class: 'f' }, '照片上的文字'), ta,
+          el('div', { class: 'muted small', id: 'scanHint' }, '可用 iPhone 輸入框的「掃描文字」(長按文字框 → 掃描文字)把照片上的字掃進來,再按「把文字變成表格」。'),
+          el('label', { class: 'f' }, '分欄方式(每行一列)'), delimBox,
+          el('label', { class: 'row', style: 'margin:6px 0' }, head, '第一列是表頭'), info, pv, convert)),
+      el('h3', {}, '表格'), box);
+    drawDelims(); draw();
+  }, () => {});
 }
 
 /* ---------- 轉 Excel:可編輯表格 ---------- */
@@ -1051,6 +1068,7 @@ function openExpenseForm(rec, extra) {
     newPhotos.forEach(b => photoBox.append(el('img', { class: 'photo-view', src: URL.createObjectURL(b), alt: '新照片' })));
     const f = (l, n) => [el('label', { class: 'f' }, l), n];
     body.append(
+      ...(extra && extra.noAi ? [el('div', { class: 'banner warn', id: 'expenseNote' }, '無 AI 不會自動讀金額,請手動填。照片會存為附件。')] : []),
       ...f('日期', inDate), ...f('店名', inStore), ...f('總額', inTotal), ...f('分類', inCat), newCat,
       ...f('付款方式', inPay), ...f('付款人', inPayer),
       el('label', { class: 'row', style: 'margin:10px 0' }, inShared, '家庭共用'),
@@ -1062,7 +1080,7 @@ function openExpenseForm(rec, extra) {
         const total = Reconcile.parseAmount(inTotal.value);
         let cat = newCat.value.trim() || inCat.value;
         if (!date) { alert('請輸入正確日期'); return; }
-        if (total === null) { alert('請輸入總額'); return; }
+        if (total === null || total <= 0) { alert('請輸入總額(大於 0)。無 AI 不會自動讀金額,請對照照片手動填。'); return; }
         if (!cat) { alert('請選擇分類'); return; }
         if (newCat.value.trim() && !settings.categories.includes(cat)) { settings.categories.push(cat); saveSettings(settings); }
         for (const b of newPhotos) r.photoIds.push(await Media.saveMedia(b, { kind: 'expense', location: extra && extra.location }));
@@ -1073,6 +1091,7 @@ function openExpenseForm(rec, extra) {
         if (extra && extra.onSaved) extra.onSaved();
         popScreen();
       } }, '儲存'));
+    if (isNew && extra && extra.noAi) setTimeout(() => { try { inTotal.focus(); } catch (_) { /* 不影響填寫 */ } }, 150);   // 金額欄自動聚焦
   });
 }
 
@@ -1179,6 +1198,12 @@ async function renderSettingsTab(root) {
   const cats = el('textarea', { id: 'setCats', rows: 3 }, s.categories.join('、'));
   cats.value = s.categories.join('、');
   const f = (l, n, hint) => [el('label', { class: 'f' }, l), n, hint ? el('div', { class: 'muted small' }, hint) : null];
+  const aiNow = aiOn(s);
+  root.append(el('div', { class: 'card', id: 'aiStatusCard' },
+    el('div', { class: 'row' }, el('b', { class: 'grow' }, 'AI 讀照片'), el('span', { class: 'tag ' + (aiNow ? 'ok' : 'warn'), id: 'aiStatusTag' }, aiNow ? '已啟用' : '未啟用')),
+    el('div', { class: 'muted', id: 'aiStatusText' }, aiNow ? '拍照後 AI 會自動讀出內容,你只要核對。' : '未啟用:無法自動讀取照片,記帳/表格等仍可手動使用。'),
+    el('div', { class: 'muted small' }, '一般收據一筆約 US$0.015、約 NT$0.45(估算)。'),
+    el('button', { class: 'btn', id: 'aiHelpBtn', style: 'margin-top:8px', onclick: () => openAiHelp() }, aiNow ? '費用與說明' : '怎麼啟用?')));
   root.append(el('div', { class: 'card' },
     el('label', { class: 'row', style: 'margin:0 0 8px' }, aiCb, 'AI 分析(關閉時全部手動操作,不呼叫 AI)'),
     ...f('Anthropic API 金鑰', api, '只存在這支手機本機。僅測試用,勿在公用裝置輸入。'),
@@ -1204,7 +1229,7 @@ async function renderSettingsTab(root) {
       alert('已儲存');
     } }, '儲存設定')));
   root.append(CloudUI.mediaCard());
-  root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '多功能拍照工具 v5'));
+  root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '多功能拍照工具 v6'));
 }
 
 /* ---------- 啟動 ---------- */
