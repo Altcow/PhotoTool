@@ -2,12 +2,12 @@
 // 與 app.js 循環匯入:只在函式內使用
 import * as DB from './db.js';
 import * as AI from './ai.js';
-import { el, uuid, today, pad2, pushScreen, popScreen, thumbImg, resizeImage, getSettings, aiOn, isPdf, MAX_FILE_BYTES } from './app.js';
+import { el, uuid, today, pad2, pushScreen, popScreen, thumbImg, resizeImage, getSettings, aiOn, isPdf, MAX_FILE_BYTES, toast, attachSaveBar, keepSwitch, goCamera } from './app.js';
 import { copyText, shareText } from './ui_room.js';
 import { exportSheet } from './ui_export.js';
 import * as Media from './media.js';
 
-const { Settle, Ledger, Reconcile, Stats, Sheets } = window;
+const { Settle, Ledger, Reconcile, Stats, Sheets, KeepPhoto, SaveBar } = window;
 const bigBtn = (icon, text, onclick, cls, id) => el('button', { class: 'big-btn ' + (cls || ''), id, onclick }, el('span', { class: 'bi' }, icon), el('span', { class: 'bt' }, text));
 const chip = (label, on, fn, extra) => el('button', Object.assign({ class: 'chip' + (on ? ' on' : ''), onclick: fn }, extra || {}), label);
 const fmtDay = ms => { const d = new Date(ms || Date.now()); return d.getFullYear() + '/' + pad2(d.getMonth() + 1) + '/' + pad2(d.getDate()); };
@@ -41,7 +41,7 @@ export function openTripList() {
     const draw = async () => {
       const all = (await DB.allTrips()).map(Ledger.normalizeTrip).sort((a, b) => b.createdAt - a.createdAt);
       list.replaceChildren();
-      if (!all.length) list.append(el('div', { class: 'empty', id: 'tripEmpty' }, '還沒有旅遊團。按「新增旅遊團」,先建成員,再列收費項目。'));
+      if (!all.length) list.append(el('div', { class: 'empty', id: 'tripEmpty' }, '還沒有旅遊團。先建成員,再記每一筆花費。'), el('button', { class: 'big-btn primary', id: 'tripEmptyNew', onclick: () => openNewTrip() }, el('span', { class: 'bi' }, '➕'), el('span', { class: 'bt' }, '新增旅遊團')));
       all.forEach(t => {
         const done = t.records.filter(Settle.isDone).length, todo = t.records.length - done;
         list.append(el('div', { class: 'card trip-row', 'data-id': t.id },
@@ -70,10 +70,10 @@ export function openTripList() {
       bigBtn('📤', '匯出全部', async () => { const all = await DB.allTrips(); if (all.length) shareJson(Ledger.toExport(all), '分帳記事本.trip.json'); }, '', 'tripExportAll')),
       list);
     draw();
-  });
+  }, null, 'trips');
 }
 
-function openNewTrip() {
+export function openNewTrip() {
   pushScreen('新增旅遊團', body => {
     const name = el('input', { type: 'text', id: 'ntName', value: '旅遊 ' + fmtDay(Date.now()), maxlength: 60 });
     const members = el('textarea', { id: 'ntMembers', rows: 6, placeholder: '先貼上或口述成員名單,用逗號、頓號、空白或換行分隔。\n小孩可在名字後加 (小孩)、(小孩0.5)、(小孩免費)。\n家庭可寫一行:A家庭:小唐 小唐太太 小唐兒子(小孩)' });
@@ -92,9 +92,10 @@ function openNewTrip() {
 
 /* ---------- 成員 ---------- */
 function openMembers(trip, onChange) {
-  pushScreen('成員', body => {
+  pushScreen('成員', (body, entry) => {
+    let sbM = null;
     const list = el('div', { id: 'memList' });
-    const commit = async () => { await saveTrip(trip); if (onChange) onChange(); };
+    const commit = async () => { await saveTrip(trip); if (sbM) sbM.markAuto({ where: '旅遊團「' + trip.name + '」' }); if (onChange) onChange(); };
     const draw = () => {
       list.replaceChildren(...trip.members.map(m => {
         const inf = trip.info[m] || { kind: 'adult', weight: 1 }, child = inf.kind === 'child';
@@ -167,7 +168,7 @@ async function openTrip(id) {
     entry.refresh = refresh;                 // 子畫面都就地修改同一個 trip 物件,不重讀資料庫(避免讀到還沒存完的舊資料)
 
     body.append(top, list); refresh();
-  });
+  }, null, 'trip');
 }
 
 /* ---------- 成員選擇列(多選):全員/只有大人/只有小孩/家庭一鍵 ---------- */
@@ -193,6 +194,7 @@ function openRecord(trip, rec, onDone) {
   const isNew = !rec;
   const r = rec ? Object.assign(clone(rec), { photos: (rec.photos || []).slice() }) : Ledger.normalizeRecord({ id: uuid(), title: '', payer: '', amount: 0, status: 'todo', source: 'manual', participants: trip.members.slice() });
   if (!r.photos) r.photos = [];
+  let storedN = r.photos.length, keep = KeepPhoto.fromSettings(getSettings(), undefined), sbR = null, lastNew = 0;
   if (!isNew && !r.participants.length && (r.split.mode || 'equal') === 'equal') r.participants = trip.members.slice();
   let timer = null, saved = false;
   const members = () => Settle.allMembers(trip);
@@ -203,13 +205,22 @@ function openRecord(trip, rec, onDone) {
     if (!isNew && !trip.records.some(x => x.id === r.id)) return;
     if (!r.title.trim() && !(r.amount > 0)) return;       // 完全空白不存
     r.status = alloc().ok ? 'done' : 'todo';
+    const newOnes = r.photos.slice(storedN);
     const out = Object.assign({}, r);
+    out.photos = r.photos.slice(0, storedN); out.mediaIds = (r.mediaIds || []).slice(0, storedN);          // 沒開「保留照片」:新照片不寫入
+    lastNew = 0;
+    if (keep && newOnes.length) {
+      const ids = await KeepPhoto.persist(newOnes, true, b => Media.saveMedia(b, { kind: 'trip', ownerId: r.id }));
+      out.photos = out.photos.concat(newOnes); out.mediaIds = out.mediaIds.concat(ids); r.mediaIds = out.mediaIds.slice(); storedN = out.photos.length; lastNew = newOnes.length;
+    }
     const i = trip.records.findIndex(x => x.id === r.id);
     if (i >= 0) trip.records[i] = out; else trip.records.push(out);
     saved = true;
     await saveTrip(trip);
+    if (sbR) sbR.markAuto({ toast: KeepPhoto.toast('旅遊團「' + trip.name + '」', keep, Math.max(lastNew, r.photos.length - storedN)) });
+    return true;
   }
-  const later = () => { clearTimeout(timer); timer = setTimeout(persist, 500); };
+  const later = () => { if (sbR) sbR.markDirty(); clearTimeout(timer); timer = setTimeout(persist, 500); };
 
   pushScreen(isNew ? '新增項目' : '項目', (body, entry) => {
     const preview = el('div', { id: 'recPreview', class: 'rpreview' });
@@ -321,10 +332,11 @@ function openRecord(trip, rec, onDone) {
     }
     function drawPhotos() {
       const ai = aiOn(getSettings());
-      const add = async ev => { const files = Array.from(ev.target.files || []); ev.target.value = ''; for (const f of files) { if (f.size > MAX_FILE_BYTES) { alert('檔案太大'); continue; } try { const b = f.type === 'application/pdf' ? f : await resizeImage(f); r.photos.push(b); r.mediaIds = r.mediaIds || []; r.mediaIds[r.photos.length - 1] = await Media.saveMedia(b, { kind: 'trip', ownerId: r.id }); } catch (_) { alert('讀取失敗'); } } drawPhotos(); later(); };
+      const add = async ev => { const files = Array.from(ev.target.files || []); ev.target.value = ''; for (const f of files) { if (f.size > MAX_FILE_BYTES) { alert('檔案太大'); continue; } try { const b = f.type === 'application/pdf' ? f : await resizeImage(f); r.photos.push(b); } catch (_) { alert('讀取失敗'); } } drawPhotos(); later(); };
       const out = el('div', { id: 'receiptOut' });
       photoBox.replaceChildren(el('label', { class: 'f' }, '收據照片(可選)'),
-        r.photos.length ? el('div', { class: 'thumbs' }, r.photos.map((b, i) => el('div', { class: 'thumb' }, thumbImg(b, '收據'), el('button', { 'aria-label': '移除', onclick: () => { r.photos.splice(i, 1); if (r.mediaIds) r.mediaIds.splice(i, 1); drawPhotos(); later(); } }, '×')))) : null,
+        r.photos.length ? el('div', { class: 'thumbs' }, r.photos.map((b, i) => el('div', { class: 'thumb' }, thumbImg(b, '收據'), el('button', { 'aria-label': '移除', onclick: async () => { if (i < storedN) { if (!confirm('刪除這張已保留的照片?(釋放空間,無法復原)')) return; const mid = (r.mediaIds || [])[i]; if (mid) await Media.deleteMedia(mid); if (r.mediaIds) r.mediaIds.splice(i, 1); storedN--; toast('已刪除照片,釋放空間'); } r.photos.splice(i, 1); drawPhotos(); later(); } }, '×')))) : null,
+        el('div', { class: 'muted small', id: 'photoKeepInfo' }, KeepPhoto.detailText(storedN) + (r.photos.length > storedN ? ';新加的 ' + (r.photos.length - storedN) + ' 張' + (keep ? '儲存時會保留' : '只用來對照,不會保留') : '')),
         el('div', { class: 'row wrap' },
           el('label', { class: 'btn sm' }, '📷 拍照', el('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'hidden', id: 'recCam', onchange: add })),
           el('label', { class: 'btn sm' }, '🖼 相簿/PDF', el('input', { type: 'file', accept: 'image/*,application/pdf', multiple: true, class: 'hidden', id: 'recAlbum', onchange: add })),
@@ -356,6 +368,9 @@ function openRecord(trip, rec, onDone) {
       isNew ? null : el('button', { class: 'btn danger block', id: 'recDelete', style: 'margin-top:14px', onclick: async () => { if (!confirm('刪除這個項目?')) return; trip.records = trip.records.filter(x => x.id !== r.id); clearTimeout(timer); saved = false; isNew || (rec = null); await saveTrip(trip); popScreen(); } }, '刪除項目'));
     drawAll();
     entry.s.dataset.rec = '1';
+    sbR = attachSaveBar(entry, { auto: true, id: 'btnSaveRecord',
+      onSave: async () => { const ok = await persist(); if (!ok) { alert('請先填項目名稱或金額'); return false; } return { toast: KeepPhoto.toast('旅遊團「' + trip.name + '」', keep, Math.max(lastNew, r.photos.length - storedN)) }; },
+      extra: [keepSwitch(keep, v => { keep = v; drawPhotos(); later(); })] });
   }, async () => { await persist(); if (onDone) onDone(); });
 }
 
@@ -394,7 +409,7 @@ function openNote(trip, onDone) {
           const done = payer && x.amount > 0;
           trip.records.push(Ledger.normalizeRecord({ id: uuid(), title: x.title.trim(), payer: payer || '', amount: x.amount, participants: trip.members.slice(), status: done ? 'done' : 'todo', qty: x.qty, date: x.date || undefined, source: 'note' })); n++;
         }
-        await saveTrip(trip); if (onDone) onDone(); popScreen();
+        await saveTrip(trip); toast(SaveBar.toastText('旅遊團「' + trip.name + '」')); if (onDone) onDone(); popScreen();
       }, 'primary', 'noteConfirm'));
     }
     async function organise() {
@@ -493,6 +508,7 @@ function openSettle(trip, opts) {
         const put = async (id, date, total, store, why) => { if (await DB.getExpense(id)) { skipped++; return; } await DB.putExpense({ id, date, store, total, currency: 'TWD', items: [], payment_method: '', category: cat.value, payer: sets.myName || me, shared: false, note: '分帳:' + trip.name + '(' + why + ')', photoIds: [], location: null, createdAt: Date.now(), updatedAt: Date.now() }); added++; };
         if (whole) { const tot = rows.reduce((a, r) => a + r.share, 0); if (tot > 0) await put('trip-' + trip.id + '-total-fam', rows.map(r => r.date).sort().pop(), tot, trip.name, '我家整團'); }
         else for (const r of rows) await put('trip-' + trip.id + '-' + r.recordId + '-fam', r.date, r.share, r.title, '我家的份');
+        toast(SaveBar.toastText('記帳本') + '(' + added + ' 筆)');
         note.textContent = '已存入記帳本 ' + added + ' 筆' + (skipped ? ',略過已存過的 ' + skipped + ' 筆' : '');
       }
       return el('div', { class: 'card', id: 'saveBox' }, el('b', {}, '把我家的份存入記帳本'), el('div', { class: 'muted small' }, me ? '我是 ' + me + ',我家:' + Stats.familyOf(trip, me).join('、') : '還沒選「我是誰」(回旅遊團頁點選)'), el('div', { class: 'row', style: 'margin:6px 0' }, cat),
@@ -532,7 +548,7 @@ function openDrinkList(trip, onDone) {
         if (!lines.length) { alert('沒有可建立的品項'); return; }
         const rec = Ledger.drinkListToRecord(lines.filter(l => l.name.trim()), { title: title.value.trim() || '飲料', id: uuid() });
         rec.participants = trip.members.slice();
-        trip.records.push(rec); await saveTrip(trip);
+        trip.records.push(rec); await saveTrip(trip); toast(SaveBar.toastText('旅遊團「' + trip.name + '」'));
         if (onDone) onDone(); popScreen(); openCupAssign(trip, rec, onDone);
       }, 'primary', 'drinkCreate'));
     }
@@ -581,8 +597,9 @@ function openCupAssign(trip, rec, onDone) {
     const ctx = () => ctxOf(trip);
     const summary = el('div', { class: 'banner', id: 'cupSummary' }), payerBox = el('div', { id: 'cupPayer' }), list = el('div', { id: 'cupList' });
     let timer = null;
-    const persist = async () => { clearTimeout(timer); const a = Settle.allocate(r, Settle.allMembers(trip), ctx()); r.status = a.ok ? 'done' : 'todo'; await saveTrip(trip); };
-    const later = () => { clearTimeout(timer); timer = setTimeout(persist, 400); };
+    let sbC = null;
+    const persist = async () => { clearTimeout(timer); const a = Settle.allocate(r, Settle.allMembers(trip), ctx()); r.status = a.ok ? 'done' : 'todo'; await saveTrip(trip); if (sbC) sbC.markAuto({ where: '旅遊團「' + trip.name + '」' }); };
+    const later = () => { if (sbC) sbC.markDirty(); clearTimeout(timer); timer = setTimeout(persist, 400); };
     const lineIdx = () => [...new Set(r.items.map(i => i.line))];
     function drawSummary() {
       const a = Settle.allocate(r, Settle.allMembers(trip), ctx()), asg = Ledger.assignedCount(r);
@@ -619,6 +636,7 @@ function openCupAssign(trip, rec, onDone) {
     drawPayer(); drawSummary(); drawList();
     entry.s.dataset.cup = '1';
     entry.persist = persist;
+    sbC = attachSaveBar(entry, { auto: true, id: 'btnSaveCup', onSave: async () => { await persist(); return { where: '旅遊團「' + trip.name + '」' }; } });
   }, async () => { await (async () => { const a = Settle.allocate(r, Settle.allMembers(trip), ctxOf(trip)); if (trip.records.some(x => x.id === r.id)) { r.status = a.ok ? 'done' : 'todo'; await saveTrip(trip); } })(); if (onDone) onDone(); });
 }
 
@@ -666,4 +684,74 @@ function openTripStats(trip, range, label) {
         el('div', { class: 'olist' }, d.records.map(r => el('div', { class: 'orow' }, el('span', { class: 'no' }, '•'), el('span', { class: 'ol' }, r.title, el('em', {}, '(' + r.payer + ' 付)')), el('span', { class: 'oq' }, money(r.amount)), el('span', { class: 'op' }, '我家 ' + money(r.familyShare))))))) : [el('div', { class: 'empty' }, '這段期間沒有已完成記錄')]),
       el('h3', {}, '匯出'), exportSheet(() => { const x = Stats.tripStats(trip, { myName: sets.myName, range }); return Sheets.stats(Stats.overview([x]), [x], label + ' · ' + trip.name, ''); }));
   });
+}
+
+/* ---------- 一句話記帳 / 一句話分帳(不用拍照) ---------- */
+// 個人記帳:「午餐 120,飲料 60」沒有付款人,視為我自己付;可帶日期(11/23、昨天…)
+function personalRecords(text) {
+  const records = [], unparsed = [];
+  String(text || '').normalize('NFKC').split(/[\n,;、。]+/).forEach(raw => {
+    let seg = raw.trim(); if (!seg) return;
+    const dx = Ledger.extractDate(seg, today()); if (dx.date) seg = dx.rest.trim();
+    const m = seg.match(/^(.*?)\s*([0-9][0-9,]*(?:\.\d+)?|[零〇一二兩两三四五六七八九十百千萬万壹貳參肆伍陸柒捌玖拾佰仟]+)\s*(?:元|塊|圓)?$/);
+    const amt = m ? Reconcile.parseAmount(m[2]) : null;
+    if (!m || amt === null || amt <= 0 || Math.floor(amt) !== amt) { unparsed.push(raw.trim()); return; }
+    records.push({ title: m[1].replace(/[:：\-—\s]+$/, '').trim() || '支出', amount: amt, date: dx.date || today() });
+  });
+  return { records, unparsed };
+}
+export function openVoiceExpense() {
+  pushScreen('一句話記帳', body => {
+    const settings = getSettings();
+    const cats = settings.categories.length ? settings.categories : ['餐飲'];
+    const ta = el('textarea', { id: 'voiceText', rows: 4, placeholder: '點鍵盤上的麥克風,說一句。例:午餐 120,飲料 60,捷運 30' });
+    const out = el('div', { id: 'voiceOut' }), status = el('div', { class: 'muted', id: 'voiceStatus' });
+    let rows = [];
+    const draw = () => {
+      out.replaceChildren();
+      if (!rows.length) return;
+      out.append(el('h3', {}, '預覽(可改,確認才寫入記帳本)'));
+      rows.forEach((x, i) => {
+        const cat = el('select', { 'aria-label': '分類', onchange: e => { x.category = e.target.value; } }, cats.map(c => el('option', { value: c }, c))); cat.value = x.category;
+        out.append(el('div', { class: 'card voice-row', 'data-i': i },
+          el('div', { class: 'row' }, el('input', { type: 'text', class: 'grow', value: x.title, 'aria-label': '項目', oninput: e => { x.title = e.target.value; } }),
+            el('input', { type: 'number', inputmode: 'numeric', style: 'width:96px', value: x.amount, 'aria-label': '金額', oninput: e => { x.amount = Math.round(Number(e.target.value) || 0); } }),
+            el('button', { class: 'btn sm danger', 'aria-label': '刪除', onclick: () => { rows.splice(i, 1); draw(); } }, '✕')),
+          el('div', { class: 'row', style: 'margin-top:6px' }, el('input', { type: 'date', value: x.date, 'aria-label': '日期', onchange: e => { const d = Reconcile.normalizeDate(e.target.value); if (d) x.date = d; } }), cat)));
+      });
+      out.append(bigBtn('✅', '確認寫入 ' + rows.length + ' 筆', async () => {
+        const ok = rows.filter(x => x.title.trim() && x.amount > 0);
+        if (!ok.length) { alert('沒有可以寫入的項目'); return; }
+        for (const x of ok) await DB.putExpense({ id: uuid(), date: x.date, store: x.title.trim(), total: x.amount, currency: 'TWD', items: [], payment_method: '', category: x.category, payer: settings.myName, shared: false, note: '一句話記帳', photoIds: [], location: null, createdAt: Date.now(), updatedAt: Date.now() });
+        toast('已存到 記帳本(' + ok.length + ' 筆,未保留照片)'); popScreen();
+      }, 'primary', 'voiceConfirm'));
+    };
+    async function organise() {
+      const text = ta.value.trim(); if (!text) return;
+      let res = null, note = '';
+      if (aiOn(settings) && navigator.onLine) {
+        status.replaceChildren(el('span', { class: 'spin' }), ' AI 整理中…');
+        try {
+          const tool = AI.TOOLS.find(t => t.name === 'parse_expenses');
+          const resp = await AI.callModel(settings, [{ role: 'user', content: [{ type: 'text', text: '(使用者選擇的動作:一句話個人記帳,請使用 parse_expenses;沒有付款人時 payer 填「我」)\n使用者說的話:' + text }] }], AI.buildSystem(today(), settings.categories), { tools: [tool], tool_choice: { type: 'tool', name: 'parse_expenses' }, max_tokens: 2000 });
+          const tu = (resp.content || []).find(b => b.type === 'tool_use' && b.name === 'parse_expenses');
+          if (!tu) throw new Error('AI 沒有回傳結果');
+          res = { records: (tu.input.records || []).map(x => ({ title: String(x.title || ''), amount: Math.round(Number(x.amount) || 0), date: today() })), unparsed: tu.input.unclear || [] };
+        } catch (e) { note = 'AI 失敗(' + e.message + '),改用內建規則。'; }
+      }
+      if (!res) res = personalRecords(text);
+      rows = res.records.map(r => ({ title: r.title, amount: r.amount, date: r.date, category: cats.includes('餐飲') ? '餐飲' : cats[0] }));
+      status.textContent = note + (res.unparsed.length ? '看不懂這幾段,請自己補:' + res.unparsed.join(' / ') : '') + (!rows.length && !res.unparsed.length ? '沒有內容' : '');
+      draw();
+    }
+    body.append(el('div', { class: 'muted small' }, '不用拍照。用鍵盤上的麥克風口述,或直接打字。沒說付款人就當作你自己付。'), ta, bigBtn('🪄', '整理成記錄', organise, 'primary', 'voiceGo'), status, out);
+    setTimeout(() => { try { ta.focus(); } catch (_) { /* 不影響 */ } }, 200);
+  });
+}
+export async function openVoiceSplit() {
+  const trips = (await DB.allTrips()).map(Ledger.normalizeTrip);
+  if (!trips.length) { openNewTrip(); return; }
+  const go = async id => { const t = await loadTrip(id); if (t) openNote(t, () => {}); };
+  if (trips.length === 1) { go(trips[0].id); return; }
+  pushScreen('要記在哪一團?', body => { trips.forEach(t => body.append(bigBtn('🧾', t.name, () => { popScreen(); go(t.id); }, '', 'pickTrip'))); });
 }

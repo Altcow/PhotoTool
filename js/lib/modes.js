@@ -6,16 +6,16 @@
   var KEY = 'pt_mode';
   // chatMode:有 AI 時送給 openChat 的模式(對應 ai.js 的 MODE_HINTS);manual:沒有 AI 時的手動入口
   var MODES = [
-    { id: 'expense', label: '記帳', icon: '🧾', needsAi: false, desc: '拍收據 → 記一筆帳', chatMode: 'expense', manual: 'expense', noAi: '未啟用 AI:不會自動讀金額,請手動填。照片會當附件。' },
-    { id: 'table', label: '表格', icon: '📊', needsAi: false, desc: '拍表格 → 轉成可編輯的 Excel', chatMode: 'excel', manual: 'table', noAi: '未啟用 AI:不會自動讀表格。可用輸入框的「掃描文字」把字掃進來,再轉成表格。' },
     { id: 'menu', label: '菜單', icon: '🍹', needsAi: false, desc: '拍菜單 → 做成點餐菜單', chatMode: 'menu', manual: 'menu', noAi: '未啟用 AI:不會自動讀菜單。請貼上文字(每行「品名 價格」)或手動輸入。' },
+    { id: 'expense', label: '記帳', icon: '🧾', needsAi: false, desc: '拍收據 → 記一筆帳', chatMode: 'expense', manual: 'expense', noAi: '未啟用 AI:不會自動讀金額,請手動填。照片會當附件。' },
     { id: 'split', label: '分帳', icon: '👥', needsAi: false, desc: '拍帳單 → 算出每人應付', chatMode: 'split', manual: 'split', noAi: '未啟用 AI:不會自動讀品項。請手動輸入品項與金額,由程式算。' },
+    { id: 'table', label: '表格', icon: '📊', needsAi: false, desc: '拍表格 → 轉成可編輯的 Excel', chatMode: 'excel', manual: 'table', noAi: '未啟用 AI:不會自動讀表格。可用輸入框的「掃描文字」把字掃進來,再轉成表格。' },
     { id: 'calc', label: '計算', icon: '🧮', needsAi: false, desc: '拍數字 → 由程式加減乘除', chatMode: 'calc', manual: 'calc', noAi: '未啟用 AI:不會自動讀數字。請手動輸入數字,由程式算。' },
     { id: 'translate', label: '翻譯', icon: '🌐', needsAi: true, desc: '拍文字 → 翻成繁體中文', chatMode: 'translate', manual: null, noAi: '' },
     { id: 'lookup', label: '查資料', icon: '🔍', needsAi: true, desc: '拍物品/植物 → 辨識並給資料', chatMode: 'lookup', manual: null, noAi: '' },
     { id: 'auto', label: '自動', icon: '✨', needsAi: true, desc: '由 AI 判斷拍的是什麼,自動選功能', chatMode: null, manual: null, noAi: '' },
   ];
-  var DEFAULT_ID = 'expense';
+  var DEFAULT_ID = 'menu';   // 拍照主要用在菜單
   function byId(id) { for (var i = 0; i < MODES.length; i++) if (MODES[i].id === id) return MODES[i]; return null; }
   // 沒有 AI 時,需要 AI 的模式不能選
   function selectable(id, aiOn) { var m = byId(id); return !!m && (aiOn || !m.needsAi); }

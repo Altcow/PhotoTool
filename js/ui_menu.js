@@ -2,12 +2,13 @@
 // 與 app.js 循環匯入:只在函式內使用
 import * as DB from './db.js';
 import * as AI from './ai.js';
-import { el, uuid, today, pad2, pushScreen, popScreen, thumbImg, photoStrip, getSettings, aiOn, openSettings, resizeImage, MAX_FILE_BYTES } from './app.js';
+import { pasteIntake } from './ui_paste.js';
+import { el, uuid, today, pad2, pushScreen, popScreen, thumbImg, photoStrip, getSettings, aiOn, openSettings, resizeImage, MAX_FILE_BYTES, toast, attachSaveBar, saveSettings } from './app.js';
 import { genToken, NetError } from './net.js';
 import { getNet, hasBackend, mockOn, configuredDbUrl } from './netctx.js';
 import { openRoomHost, openRoomJoin } from './ui_room.js';
 
-const { Menu } = window;
+const { Menu, Guide } = window;
 const fmtDate = ms => { const d = new Date(ms || 0); return d.getFullYear() + '/' + (d.getMonth() + 1) + '/' + d.getDate(); };
 const bigBtn = (icon, text, onclick, cls, id) => el('button', { class: 'big-btn ' + (cls || ''), id, onclick }, el('span', { class: 'bi' }, icon), el('span', { class: 'bt' }, text));
 const toLocalInput = ms => { const d = new Date(ms); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
@@ -37,7 +38,7 @@ async function openMyRooms() {
     const draw = async () => {
       const rooms = (await DB.allRooms()).sort((a, b) => b.createdAt - a.createdAt);
       body.replaceChildren();
-      if (!rooms.length) { body.append(el('div', { class: 'empty' }, '還沒有開過團')); return; }
+      if (!rooms.length) { body.append(el('div', { class: 'empty' }, '還沒有開過團。'), bigBtn('🍹', '去開團', () => { popScreen(); openCreateRoom(); }, 'primary', 'roomsEmptyGo')); return; }
       rooms.forEach(r => body.append(el('div', { class: 'card room-row', 'data-code': r.code },
         el('div', { class: 'row' }, el('b', { class: 'grow' }, r.title), el('span', { class: 'tag' }, r.code)),
         el('div', { class: 'muted small' }, fmtDate(r.createdAt) + (Date.now() > r.createdAt + 86400000 ? ' · 已過期' : '')),
@@ -95,8 +96,10 @@ export function openMenuBuilder(initBlobs, opts) {
     }, 'primary', 'builderAI');
     if (!aiOn(settings)) goAI.classList.add('hidden');
     else if (opts.auto && blobs.length) setTimeout(() => goAI.click(), 0);
+    if (opts.focusPaste) setTimeout(() => ta.focus(), 250);
+    const intake = !aiOn(settings) ? pasteIntake({ photos: blobs, rows: 4, placeholder: '把菜單上的字貼在這裡(每行「品名 價格」),貼上後直接整理', onText: (t, via) => { ta.value = t; if (via === 'paste' || via === 'set') { const b = document.getElementById('builderText'); if (b) b.click(); } } }) : null;
     body.append(
-      opts.note && !aiOn(settings) ? el('div', { class: 'banner warn', id: 'noAiNote' }, opts.note) : null,
+      ...[intake ? intake.node : null, opts.note && !aiOn(settings) ? el('div', { class: 'banner warn', id: 'noAiNote' }, opts.note) : null].filter(Boolean),
       el('div', { class: 'two-col' },
         el('div', {}, el('label', { class: 'f' }, '菜單照片(多張/多頁會合併,最多 4 張)'), strip,
           el('div', { class: 'row' },
@@ -172,14 +175,30 @@ export function menuEditor(menu) {
 /* ---------- 範本編輯頁 ---------- */
 export function openMenuEditor(menu, opts) {
   opts = opts || {};
-  pushScreen(opts.isNew ? '新菜單' : '編輯菜單', body => {
+  let isNew = !!opts.isNew, skipAsk = false;
+  pushScreen(isNew ? '新菜單' : '編輯菜單', (body, entry) => {
     if (opts.notices && opts.notices.length) body.append(el('div', { class: 'banner', id: 'edNotices' }, opts.notices.join('\n')));
-    if (opts.photos && opts.photos.length) body.append(photoStrip(opts.photos));
-    body.append(menuEditor(menu),
-      el('div', { class: 'sticky-act' },
-        bigBtn('💾', '存為範本', async () => { if (await saveTemplate(menu)) popScreen(); }, 'primary', 'edSave'),
-        opts.isNew || opts.noOrder ? null : null,
-        bigBtn('🍹', '存好並開團', async () => { if (await saveTemplate(menu)) { popScreen(); openCreateRoom([menu.id]); } }, '', 'edSaveRoom')));
+    if (opts.photos && opts.photos.length) body.append(photoStrip(opts.photos), el('div', { class: 'muted small' }, '照片只用來對照,不會存起來(菜單範本只存文字)。'));
+    body.append(el('div', { class: 'muted small' }, '價格可以先留空,點餐時會顯示「價格待補」,結單後再輸入店家總額分攤。'), menuEditor(menu));
+    const sb = attachSaveBar(entry, {
+      id: 'edSave', label: '💾 存為範本',
+      onSave: async () => {
+        if (!(await saveTemplate(menu))) return false;
+        const first = isNew; isNew = false;
+        if (!skipAsk && Guide.afterTemplateSave(first) === 'ask-open-room') setTimeout(() => openAskRoom(menu), 0);
+        return { where: '我的菜單', view: () => openLibrary() };
+      },
+      extra: [el('button', { class: 'btn', id: 'edSaveRoom', onclick: async () => { skipAsk = true; const ok = await sb.doSave(); skipAsk = false; if (ok) openCreateRoom([menu.id]); } }, '🍹 存好並開團')],
+    });
+    sb.trackInputs(body);
+  });
+}
+// 菜單範本存好之後:要馬上開團嗎?
+function openAskRoom(menu) {
+  pushScreen(Guide.ASK_ROOM.title, body => {
+    body.append(el('p', { class: 'explain-p', id: 'askText' }, '「' + (menu.shop || '這份菜單') + '」已存成範本。'),
+      bigBtn('🍹', '開團', () => { popScreen(); openCreateRoom([menu.id]); }, 'primary', 'askRoom'),
+      bigBtn('📋', Guide.ASK_ROOM.secondary, () => popScreen(), '', 'askNo'));
   });
 }
 async function saveTemplate(menu) {
@@ -211,7 +230,7 @@ export function openLibrary() {
     const draw = async () => {
       const all = (await DB.allMenus()).map(Menu.normalize).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
       list.replaceChildren();
-      if (!all.length) list.append(el('div', { class: 'empty', id: 'libEmpty' }, '找不到菜單,請先拍照建立菜單範本'));
+      if (!all.length) list.append(el('div', { class: 'empty', id: 'libEmpty' }, '還沒有菜單範本。拍一張菜單,或貼上文字。'), el('div', { class: 'big-grid two' }, bigBtn('📷', '拍菜單建立', () => openMenuBuilder([]), 'primary', 'libEmptyShoot'), bigBtn('✍️', '貼文字建立', () => openMenuBuilder([], { focusPaste: true }), '', 'libEmptyPaste')));
       all.forEach(m => list.append(el('div', { class: 'card lib-row', 'data-id': m.id },
         el('b', {}, m.shop || '(未命名)'), el('div', { class: 'muted small' }, Menu.countItems(m) + ' 個品項 · ' + fmtDate(m.updatedAt)),
         el('div', { class: 'row wrap', style: 'margin-top:8px' },
@@ -231,7 +250,7 @@ export function openLibrary() {
         bigBtn('📤', '匯出全部', async () => { const all = await DB.allMenus(); if (all.length) shareMenuFile(all, '全部菜單'); }, '', 'libExportAll')),
       list);
     draw();
-  });
+  }, null, 'library');
 }
 
 /* ---------- 開團頁 ---------- */
@@ -239,6 +258,24 @@ export async function openCreateRoom(preselect) {
   const library = (await DB.allMenus()).map(Menu.normalize).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   const settings = getSettings();
   pushScreen('開團', (body, entry) => {
+    const gate = Guide.roomGate({ hasBackend: hasBackend(), libraryCount: library.length });
+    if (gate.kind === 'need-db') {
+      body.append(el('div', { class: 'card', id: 'needDb' }, el('h2', {}, gate.title),
+        el('p', { class: 'explain-p' }, '大家要連到同一個資料庫,才能即時看到彼此點的飲料。這只要設定一次。'),
+        el('p', { class: 'explain-p' }, '到設定頁填入你自己的資料庫網址(步驟見「Firebase設定步驟.md」)。'),
+        el('p', { class: 'explain-p' }, '只想先看看流程?選「先用單機預覽」,在這支手機上試玩;結果只有這支手機看得到。')),
+        bigBtn('⚙️', '前往設定', () => openSettings(), 'primary', 'needDbSettings'),
+        bigBtn('🧪', '先用單機預覽', () => { saveSettings(Object.assign({}, getSettings(), { useMock: true })); entry.refresh = null; popScreen(); openCreateRoom(preselect); }, '', 'needDbPreview'));
+      entry.refresh = () => { if (hasBackend()) { entry.refresh = null; popScreen(); openCreateRoom(preselect); } };
+      return;
+    }
+    if (gate.kind === 'empty-library') {
+      body.append(el('div', { class: 'card', id: 'emptyLib' }, el('h2', {}, gate.title), el('p', { class: 'explain-p' }, '先有菜單,才能開團。拍一張菜單,或把菜單文字貼上來。')),
+        bigBtn('📷', '拍菜單建立', () => openMenuBuilder([]), 'primary', 'rmGoBuild'),
+        bigBtn('✍️', '貼文字建立', () => openMenuBuilder([], { focusPaste: true }), '', 'rmGoPaste'));
+      entry.refresh = async () => { const n = (await DB.allMenus()).length; if (n) { entry.refresh = null; popScreen(); openCreateRoom(preselect); } };
+      return;
+    }
     const sel = new Set(preselect || (library.length === 1 ? [library[0].id] : []));
     let titleEdited = false;
     const d0 = new Date(); d0.setMinutes(0, 0, 0); d0.setHours(d0.getHours() + 1);
@@ -282,8 +319,9 @@ export async function openCreateRoom(preselect) {
       el('div', {}, el('label', { class: 'f' }, '團名'), title, el('label', { class: 'f' }, '計畫時間'), planned, el('label', { class: 'f' }, '地點'), loc,
         el('label', { class: 'f' }, '發起人名稱'), host, el('label', { class: 'f' }, '截止下單時間(選填)'), deadline)),
       reason, extra, go);
+    if (mockOn()) body.prepend(el('div', { class: 'banner warn', id: 'previewNote' }, '單機預覽(測試模式):結果只有這支手機看得到。'));
     refresh();
-  });
+  }, null, 'room');
 }
 
 /* ---------- 開團前:菜單確認與編輯 ---------- */

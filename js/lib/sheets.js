@@ -47,19 +47,21 @@
   }
 
   // 顧客清單(點餐)
-  function customer(title, dateStr, orders, menus) {
+  function customer(title, dateStr, orders, menus, alloc) {
     var multi = (menus || []).length > 1, ps = Order.people(orders);
     var shopOf = function (o) { var m = Order.findMenu(menus, o.menuId); return m ? m.shop : ''; };
     var rows = [];
-    ps.forEach(function (p) { p.orders.forEach(function (o) { rows.push([p.display, (multi ? '[' + Order.shopTag(shopOf(o)) + '] ' : '') + Order.optionLabel(o) + (o.note ? '(' + o.note + ')' : ''), Order.cups(o), Order.lineTotal(o)]); }); });
+    ps.forEach(function (p) { p.orders.forEach(function (o) { rows.push([p.display, (multi ? '[' + Order.shopTag(shopOf(o)) + '] ' : '') + Order.optionLabel(o) + (o.note ? '(' + o.note + ')' : ''), Order.cups(o), Order.hasPrice(o) ? Order.lineTotal(o) : '價格待補']); }); });
+    var hasAlloc = alloc && alloc.ok;
+    var amountRows = hasAlloc ? alloc.perPerson.map(function (p) { return [p.display, p.cups, p.amount]; }) : null;
     return {
-      title: title + ' 顧客清單', subtitle: dateStr + ' · 共 ' + Order.cupCount(orders) + ' 杯 · 合計 ' + money(Order.grandTotal(orders)), filename: title + ' 顧客清單',
+      title: title + (hasAlloc ? ' 團購結算' : ' 顧客清單'), subtitle: hasAlloc ? dateStr + ' · ' + alloc.label + ' · 總額 ' + money(alloc.total) : dateStr + ' · 共 ' + Order.cupCount(orders) + ' 杯 · 合計 ' + money(Order.grandTotal(orders)), filename: title + (hasAlloc ? ' 團購結算' : ' 顧客清單'),
       sections: [
-        { kind: 'list', heading: '每個人', empty: '還沒有人點餐', rows: ps.map(function (p) { return { left: p.display, right: money(p.total), sub: p.cups + ' 杯' }; }) },
+        { kind: 'list', heading: hasAlloc ? '每個人要付(' + alloc.label + ')' : '每個人', empty: '還沒有人點餐', rows: hasAlloc ? alloc.perPerson.map(function (p) { return { left: p.display, right: money(p.amount), sub: p.cups + ' 杯' }; }) : ps.map(function (p) { return { left: p.display, right: p.unpricedCups ? '金額待補' : money(p.total), sub: p.cups + ' 杯' }; }) },
         { kind: 'table', heading: '明細', pageBreakBefore: true, columns: ['姓名', '品項', '杯數', '金額'], num: [2, 3], rows: rows.map(function (r) { return [r[0], r[1], String(r[2]), String(r[3])]; }) },
       ],
-      text: Order.customerText(title, dateStr, orders, menus),
-      sheets: [{ name: '顧客清單', columns: ['姓名', '品項', '杯數', '金額'], rows: rows }],
+      text: hasAlloc ? Order.allocText(title, dateStr, orders, menus, alloc) : Order.customerText(title, dateStr, orders, menus),
+      sheets: [{ name: '顧客清單', columns: ['姓名', '品項', '杯數', '金額'], rows: rows }].concat(hasAlloc ? [{ name: '結算(' + alloc.label + ')', columns: ['姓名', '杯數', '應付'], rows: amountRows }] : []),
     };
   }
   // 店員清單:一律按店分開(不含訂購人)

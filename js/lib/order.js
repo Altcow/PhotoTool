@@ -17,7 +17,9 @@
   function toInt(n) { n = Number(n); return isFinite(n) ? Math.round(n) : 0; }
   function has(v) { return v !== null && v !== undefined && v !== ''; }
   function cups(o) { return Math.max(1, toInt(o && o.qty)); }
-  function lineTotal(o) { return toInt(o.unitPrice) * cups(o); }
+  // 價格可以空白(菜單沒標價):沒價格的杯子金額待補,之後依店家總額分攤
+  function hasPrice(o) { return o && o.unitPrice !== null && o.unitPrice !== undefined && o.unitPrice !== '' && isFinite(Number(o.unitPrice)); }
+  function lineTotal(o) { return hasPrice(o) ? toInt(o.unitPrice) * cups(o) : 0; }
 
   function findMenu(menus, menuId) {
     menus = menus || [];
@@ -68,7 +70,7 @@
       var key = (o.clientId || '') + '\u0001' + (o.name || '');
       var p = map[key];
       if (!p) { p = map[key] = { key: key, clientId: o.clientId || '', name: o.name || '(未命名)', display: '', orders: [], cups: 0, total: 0 }; list.push(p); }
-      p.orders.push(o); p.cups += cups(o); p.total += lineTotal(o);
+      p.orders.push(o); p.cups += cups(o); p.total += lineTotal(o); if (!hasPrice(o)) p.unpricedCups = (p.unpricedCups || 0) + cups(o);
     });
     var seen = {};
     list.forEach(function (p) {
@@ -110,13 +112,14 @@
     var ps = people(orders);
     if (!ps.length) lines.push('(目前沒有訂單)');
     ps.forEach(function (p) {
-      lines.push(p.display + '(' + p.cups + '杯 共' + p.total + '元)');
+      lines.push(p.display + '(' + p.cups + '杯 ' + (p.unpricedCups ? '金額待補' : '共' + p.total + '元') + ')');
       p.orders.forEach(function (o, i) {
-        lines.push(' ' + (i + 1) + '. ' + (multi ? '[' + shopTag(shopOf(o)) + '] ' : '') + optionLabel(o) + ' ×' + cups(o) + ' $' + lineTotal(o) + (o.note ? '(' + o.note + ')' : ''));
+        lines.push(' ' + (i + 1) + '. ' + (multi ? '[' + shopTag(shopOf(o)) + '] ' : '') + optionLabel(o) + ' ×' + cups(o) + (hasPrice(o) ? ' $' + lineTotal(o) : ' 價格待補') + (o.note ? '(' + o.note + ')' : ''));
       });
     });
     lines.push('──────');
-    lines.push('共 ' + cupCount(orders) + ' 杯,合計 $' + grandTotal(orders));
+    var unp = (orders || []).filter(function (o) { return !hasPrice(o); }).length;
+    lines.push('共 ' + cupCount(orders) + ' 杯,合計 $' + grandTotal(orders) + (unp ? '(另有價格待補的杯數)' : ''));
     return lines.join('\n');
   }
 
@@ -190,20 +193,70 @@
       .map(function (g) { return { menuId: g.menuId, shop: g.shop, orders: g.orders, count: cupCount(g.orders), text: clerkText(g.shop, g.orders, sort, byGroup) }; });
   }
 
+
+  /* ---- 事後輸入店家報的總金額,分攤給每個人 ----
+     有價格的杯照價;沒價格的杯子均分剩餘金額;全部沒價格 → 依杯數;全部有價格但總額不同 → 差額依各人品項金額比例分。
+     餘數規則:每杯 1 元,依名單順序(最早點餐的人先)分給前面的杯子。杯數分攤不套用小孩權重(權重只用在旅遊團平均分)。 */
+  function apportion(orders, total, opts) {
+    opts = opts || {};
+    var fee = toInt(opts.fee || 0), grand = toInt(total) + fee, ps = people(orders), cupsList = [];
+    ps.forEach(function (p, pi) { p.orders.forEach(function (o) { for (var k = 0; k < cups(o); k++) cupsList.push({ pi: pi, priced: hasPrice(o), price: hasPrice(o) ? toInt(o.unitPrice) : 0, amt: 0 }); }); });
+    var N = cupsList.length;
+    if (!N) return { ok: false, code: 'NO_CUPS', error: '還沒有任何杯數' };
+    if (grand <= 0) return { ok: false, code: 'BAD_TOTAL', error: '請輸入大於 0 的總金額' };
+    var priced = cupsList.filter(function (c) { return c.priced; }), unpriced = cupsList.filter(function (c) { return !c.priced; });
+    var P = priced.reduce(function (a, c) { return a + c.price; }, 0), mode, label, notes = [];
+    var spread = function (list, amount) { var base = Math.floor(amount / list.length), rem = amount - base * list.length; list.forEach(function (c, i) { c.amt += base + (i < rem ? 1 : 0); }); return rem; };
+    var rem = 0;
+    if (unpriced.length === N) {
+      mode = 'by-cups'; label = '依杯數分攤'; rem = spread(cupsList, grand);
+    } else if (unpriced.length) {
+      var remaining = grand - P;
+      if (remaining < 0) return { ok: false, code: 'NEGATIVE_REMAINDER', error: '有價格的品項已經 $' + P + ',超過總金額 $' + grand, diff: remaining };
+      mode = 'mixed'; label = '品項價格 + 剩餘依杯數均分';
+      priced.forEach(function (c) { c.amt = c.price; });
+      rem = spread(unpriced, remaining);
+    } else {
+      mode = 'by-price'; label = '依品項價格';
+      priced.forEach(function (c) { c.amt = c.price; });
+      var diff = grand - P;
+      if (diff !== 0) {
+        var sign = diff < 0 ? -1 : 1, ad = Math.abs(diff), used = 0;
+        priced.forEach(function (c) { var x = P > 0 ? Math.floor(ad * c.price / P) : Math.floor(ad / N); c.extra = x; used += x; });
+        rem = ad - used;
+        priced.forEach(function (c, i) { c.amt += sign * (c.extra + (i < rem ? 1 : 0)); });
+        notes.push('店家總額與品項價格合計差 ' + (diff > 0 ? '+' : '') + diff + ' 元,已依各人品項金額比例分攤');
+      }
+    }
+    var per = ps.map(function (p, i) { return { key: p.key, display: p.display, cups: p.cups, amount: cupsList.filter(function (c) { return c.pi === i; }).reduce(function (a, c) { return a + c.amt; }, 0) }; });
+    var sum = per.reduce(function (a, p) { return a + p.amount; }, 0);
+    if (rem) notes.push('餘數 ' + rem + ' 元,依名單順序分給前面的人');
+    if (fee) notes.push('含運費/服務費 $' + fee + '(併入總額一起分攤)');
+    notes.push('杯數分攤不套用小孩計費權重');
+    return { ok: sum === grand, mode: mode, label: label, total: grand, shopTotal: toInt(total), fee: fee, perPerson: per, sum: sum, notes: notes, cups: N, pricedCups: priced.length, unpricedCups: unpriced.length };
+  }
+  // 顧客清單(含分攤):每人一行「N 杯 $金額」,標示依杯數分攤或依品項價格
+  function allocText(title, dateStr, orders, menus, alloc) {
+    var lines = ['【' + title + ' ' + dateStr + ' 團購結算】', '(' + alloc.label + ',店家總額 $' + alloc.shopTotal + (alloc.fee ? ' + 運費/服務費 $' + alloc.fee : '') + ')'];
+    alloc.perPerson.forEach(function (p) { lines.push(p.display + ':' + p.cups + ' 杯 $' + p.amount); });
+    lines.push('──────'); lines.push('共 ' + alloc.cups + ' 杯,合計 $' + alloc.sum);
+    alloc.notes.forEach(function (n) { lines.push('※ ' + n); });
+    return lines.join('\n');
+  }
+
   // 下單內容檢查(客戶端用)
   function validateOrder(o) {
     var errs = [];
     if (!String(o.name || '').trim()) errs.push('請輸入名字');
     if (!o.itemId || !o.itemName) errs.push('缺少品項');
     if (!(toInt(o.qty) >= 1 && toInt(o.qty) <= 20)) errs.push('杯數需為 1~20');
-    if (o.unitPrice === null || o.unitPrice === undefined || !isFinite(Number(o.unitPrice))) errs.push('價格不明');
     return errs;
   }
 
   return {
     roomCode: roomCode, isRoomCode: isRoomCode, toInt: toInt, cups: cups, lineTotal: lineTotal,
     findMenu: findMenu, findItem: findItem, basePrice: basePrice, unitPrice: unitPrice,
-    people: people, cupCount: cupCount, grandTotal: grandTotal, optionLabel: optionLabel, shopTag: shopTag,
+    hasPrice: hasPrice, apportion: apportion, allocText: allocText, people: people, cupCount: cupCount, grandTotal: grandTotal, optionLabel: optionLabel, shopTag: shopTag,
     groupByMenu: groupByMenu, customerText: customerText, tempOf: tempOf, clerkList: clerkList, clerkGroups: clerkGroups,
     clerkText: clerkText, clerkTexts: clerkTexts, validateOrder: validateOrder, GROUP_ORDER: GROUP_ORDER,
   };

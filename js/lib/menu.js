@@ -185,8 +185,7 @@
     if (countItems(menu) === 0) errs.push('菜單沒有任何品項');
     (menu.categories || []).forEach(function (c) {
       c.items.forEach(function (i) {
-        var any = i.price !== null && i.price !== undefined || Object.keys(i.prices || {}).length;
-        if (!any) errs.push('品項「' + i.name + '」沒有價格');
+        // 價格可以空白(菜單沒標價):不擋儲存與開團,顯示「價格待補」
       });
     });
     return errs;

@@ -64,7 +64,7 @@ function openRoomView(o) {
   let tab = host ? 'info' : 'menu', netMsg = '', unsub = null;
   let q = '', secKey = null, clerkSort = 'name', byGroup = true, nameVal = loadName(host ? (o.rec && o.rec.hostName) || getSettings().myName : '');
   const expanded = new Set();
-  let itemsRedraw = null;
+  let itemsRedraw = null, lastAlloc = null;
   let content, tabsBar, banner, listBox = null, stickBox = null;
   const menusN = () => {
     const ids = String((st.meta && st.meta.menuIds) || '').split(',').filter(Boolean);
@@ -142,8 +142,7 @@ function openRoomView(o) {
       const note = el('input', { type: 'text', id: 'optNote', maxlength: 100, placeholder: '備註(選填)', value: sel.note, oninput: e => { sel.note = e.target.value; } });
       function drawAll() {
         const up = unit();
-        price.textContent = up === null ? '此組合沒有價格' : money(up) + ' × ' + sel.qty + ' = ' + money(up * sel.qty);
-        add.disabled = up === null;
+        price.textContent = up === null ? '價格待補(不影響點餐,之後依店家總額分攤)' : money(up) + ' × ' + sel.qty + ' = ' + money(up * sel.qty);
         groups.replaceChildren(...[group('尺寸', sizes, 'size'), group('冰度', ices, 'ice'), group('糖度', sugars, 'sugar'),
           (menu.toppings || []).length ? el('div', { class: 'opt-g' }, el('div', { class: 'opt-l' }, '加料'), el('div', { class: 'opt-chips' }, menu.toppings.map(t => el('button', { class: 'opt-chip' + (sel.tops.has(t.name) ? ' on' : ''), 'data-opt': 'top', onclick: () => { if (sel.tops.has(t.name)) sel.tops.delete(t.name); else sel.tops.add(t.name); drawAll(); } }, t.name + (t.price ? ' +' + t.price : ''))))) : null,
           el('div', { class: 'opt-g' }, el('div', { class: 'opt-l' }, '杯數'), el('div', { class: 'qty' }, el('button', { class: 'qbtn', id: 'qtyMinus', 'aria-label': '減少', onclick: () => { sel.qty = Math.max(1, sel.qty - 1); drawAll(); } }, '−'), el('b', { id: 'qtyVal' }, sel.qty), el('button', { class: 'qbtn', id: 'qtyPlus', 'aria-label': '增加', onclick: () => { sel.qty = Math.min(20, sel.qty + 1); drawAll(); } }, '+')))].filter(Boolean));
@@ -171,14 +170,14 @@ function openRoomView(o) {
     list.forEach((x, i) => box.append(orderRow(x, i + 1, multi ? Order.shopTag((Order.findMenu(ms, x.menuId) || {}).shop) : '', {
       canEdit: isOpen(), onEdit: () => { const menu = Order.findMenu(ms, x.menuId), item = menu && Order.findItem(menu, x.itemId); if (!item) { alert('這個品項已被發起人移除,只能刪除'); return; } openOptions({ menu, item, existing: x }); },
       onDelete: async () => { if (!confirm('刪除「' + Order.optionLabel(x) + '」?')) return; try { await net.deleteOrder(o.code, x.id, { clientId: me }); } catch (e) { alert(e.message); } } })));
-    content.append(box, el('div', { class: 'total-row' }, el('span', {}, Order.cupCount(list) + ' 杯'), el('b', { id: 'mineTotal' }, '小計 ' + money(Order.grandTotal(list)))));
+    content.append(box, el('div', { class: 'total-row' }, el('span', {}, Order.cupCount(list) + ' 杯'), el('b', { id: 'mineTotal' }, list.some(x => !Order.hasPrice(x)) ? '金額待補' : '小計 ' + money(Order.grandTotal(list)))));
     if (!isOpen()) content.prepend(el('div', { class: 'banner' }, STATUS_TEXT[st.status] + ',只能查看'));
   }
   function orderRow(x, n, tag, act) {
     return el('div', { class: 'orow', 'data-oid': x.id },
       el('span', { class: 'no' }, n + '.'),
       el('span', { class: 'ol' }, tag ? el('small', {}, tag) : null, Order.optionLabel(x), x.note ? el('em', {}, '(' + x.note + ')') : null),
-      el('span', { class: 'oq' }, '×' + Order.cups(x)), el('span', { class: 'op' }, money(Order.lineTotal(x))),
+      el('span', { class: 'oq' }, '×' + Order.cups(x)), el('span', { class: 'op' }, Order.hasPrice(x) ? money(Order.lineTotal(x)) : '待補'),
       act ? el('span', { class: 'oa' }, act.canEdit && act.onEdit ? el('button', { class: 'btn sm', 'aria-label': '修改', onclick: act.onEdit }, '改') : null, act.canDelete !== false && act.onDelete ? el('button', { class: 'btn sm danger', 'aria-label': '刪除', onclick: act.onDelete }, '✕') : null) : null);
   }
 
@@ -190,12 +189,13 @@ function openRoomView(o) {
     const box = el('div', { class: 'olist cust', id: 'custList' });
     if (!ps.length) box.append(el('div', { class: 'empty' }, '還沒有人點餐'));
     ps.forEach(p => {
-      box.append(el('div', { class: 'ph' }, el('span', {}, p.display), el('span', { class: 'ps' }, p.cups + '杯 共' + money(p.total))));
+      box.append(el('div', { class: 'ph' }, el('span', {}, p.display), el('span', { class: 'ps' }, p.cups + '杯 ' + (p.unpricedCups ? '金額待補' : '共' + money(p.total)))));
       p.orders.forEach((x, i) => box.append(orderRow(x, i + 1, multi ? Order.shopTag((Order.findMenu(ms, x.menuId) || {}).shop) : '', host && isOpen() ? { onDelete: async () => { if (!confirm('刪除 ' + p.display + ' 的「' + Order.optionLabel(x) + '」?')) return; try { await net.deleteOrder(o.code, x.id, { clientId: me, hostToken: o.token }); } catch (e) { alert(e.message); } } } : null)));
     });
-    content.append(box, el('div', { class: 'total-row big' }, el('span', {}, '共 ' + Order.cupCount(st.orders) + ' 杯'), el('b', { id: 'grandTotal' }, '合計 ' + money(Order.grandTotal(st.orders)))),
+    content.append(box, el('div', { class: 'total-row big' }, el('span', {}, '共 ' + Order.cupCount(st.orders) + ' 杯'), el('b', { id: 'grandTotal' }, '合計 ' + money(Order.grandTotal(st.orders)) + (st.orders.some(x => !Order.hasPrice(x)) ? '(另有價格待補)' : ''))),
       el('div', { class: 'act-row' }, bigBtn('📋', '複製文字', () => copyText(text), 'primary', 'copyCust'), bigBtn('📤', '分享', () => shareText(text, title()), '', 'shareCust')),
-      exportSheet(() => Sheets.customer(title(), dateStr(), st.orders, menusN())));
+      host ? el('div', { class: 'card', id: 'apportionCard' }, el('b', {}, '事後輸入店家報的總金額'), el('div', { class: 'muted small' }, '菜單沒標價、或想依店家總額分攤時用。結單前後都可以。'), lastAlloc && lastAlloc.ok ? el('div', { class: 'banner', id: 'allocLabel' }, '目前顯示:' + lastAlloc.label + '(總額 $' + lastAlloc.total + ')') : null, bigBtn('💰', '輸入店家總額分攤', () => openApportion(), 'primary sm', 'btnApportion')) : null,
+      exportSheet(() => Sheets.customer(title(), dateStr(), st.orders, menusN(), lastAlloc && lastAlloc.ok ? lastAlloc : null)));
   }
 
   /* --- 店員清單(發起人) --- */
@@ -233,6 +233,7 @@ function openRoomView(o) {
   function infoTab() {
     const url = roomUrl(o.code, o.ctx), m = st.meta;
     content.replaceChildren(infoLine(),
+      o.ctx.mode === 'mock' ? el('div', { class: 'banner warn', id: 'mockNote' }, '單機預覽(測試模式):只有這支手機看得到,朋友連不進來。') : null,
       el('div', { class: 'big-code', id: 'roomCode' }, o.code),
       el('div', { class: 'chips' }, el('span', { class: 'tag ' + (isOpen() ? 'ok' : 'warn'), id: 'roomStatus' }, STATUS_TEXT[st.status] || st.status), el('span', { class: 'muted' }, Order.cupCount(st.orders) + ' 杯 · ' + Order.people(st.orders).length + ' 人 · ' + money(Order.grandTotal(st.orders)))),
       el('input', { type: 'text', readonly: true, id: 'roomLink', value: url, onfocus: e => e.target.select() }),
@@ -266,6 +267,30 @@ function openRoomView(o) {
           } catch (e) { alert('修改失敗:' + (e.message || e)); }
         }, 'primary', 'emSave'));
     });
+  }
+
+  // 事後輸入店家報的總金額:有價格的照價,沒價格的杯數均分剩餘金額;全沒價格依杯數;可加運費/服務費(整數)
+  function openApportion() {
+    pushScreen('輸入店家總額', body => {
+      const total = el('input', { type: 'number', inputmode: 'numeric', id: 'apTotal', placeholder: '店家報的總金額(元)', value: lastAlloc && lastAlloc.shopTotal ? lastAlloc.shopTotal : '' });
+      const fee = el('input', { type: 'number', inputmode: 'numeric', id: 'apFee', placeholder: '運費/服務費(選填,整數)', value: lastAlloc && lastAlloc.fee ? lastAlloc.fee : '' });
+      const out = el('div', { id: 'apOut' });
+      const compute = () => {
+        out.replaceChildren();
+        const tv = Math.round(Number(total.value) || 0), fv = Math.round(Number(fee.value) || 0);
+        if (!tv) { lastAlloc = null; out.append(el('div', { class: 'muted' }, '輸入總金額後,這裡會列出每個人要付多少。')); return; }
+        const r = Order.apportion(st.orders, tv, { fee: fv });
+        if (!r.ok) { lastAlloc = null; out.append(el('div', { class: 'banner warn', id: 'apError' }, r.error || '無法分攤')); return; }
+        lastAlloc = r;
+        out.append(el('div', { class: 'banner', id: 'apLabel' }, r.label + ' · 總額 $' + r.total), el('div', { class: 'olist' }, r.perPerson.map(p => el('div', { class: 'orow' }, el('span', { class: 'no' }, '•'), el('span', { class: 'ol' }, p.display), el('span', { class: 'oq' }, p.cups + ' 杯'), el('span', { class: 'op' }, money(p.amount))))),
+          el('div', { class: 'muted small' }, r.notes.map(n => '※ ' + n).join('\n')),
+          el('div', { class: 'act-row' }, bigBtn('📋', '複製文字', () => copyText(Order.allocText(title(), dateStr(), st.orders, menusN(), r)), 'primary', 'apCopy')),
+          exportSheet(() => Sheets.customer(title(), dateStr(), st.orders, menusN(), lastAlloc && lastAlloc.ok ? lastAlloc : r)));
+      };
+      total.addEventListener('input', compute); fee.addEventListener('input', compute);
+      body.append(el('label', { class: 'f' }, '店家報的總金額'), total, el('label', { class: 'f' }, '運費/服務費(選填)'), fee, el('div', { class: 'muted small' }, '有標價的杯照價;沒標價的杯子均分剩下的金額;全部沒標價就依杯數分攤。杯數分攤不套用小孩計費權重。'), out);
+      compute();
+    }, () => { if (tab === 'all') render(); });
   }
 
   function openHostItems() {
