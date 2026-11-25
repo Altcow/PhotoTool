@@ -1,4 +1,4 @@
-const VERSION = 'v13';
+const VERSION = 'v14';
 const CACHE = 'phototool-' + VERSION;
 const PRECACHE = [
   './',
@@ -76,7 +76,8 @@ const PRECACHE = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(PRECACHE)).then(() => self.skipWaiting()));
+  // cache:'reload' 繞過瀏覽器 HTTP 快取(GitHub Pages 會快取 10 分鐘),避免新版快取裡裝到舊檔
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(PRECACHE.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {

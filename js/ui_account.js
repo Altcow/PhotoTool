@@ -99,6 +99,6 @@ export function openAccount() {
         popScreen(); if (ctx.onLogout) ctx.onLogout();
       } }, '登出'),
       el('div', { style: 'text-align:center;margin-top:6px' }, el('button', { class: 'link-btn muted', id: 'tjPrivacy', onclick: openPrivacy }, '隱私說明')),
-      el('div', { class: 'muted small', style: 'text-align:center' }, '旅遊日誌 v13'));
+      el('div', { class: 'muted small', style: 'text-align:center' }, '旅遊日誌 v14'));
   });
 }

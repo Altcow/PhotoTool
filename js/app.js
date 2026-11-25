@@ -1409,7 +1409,7 @@ async function renderSettingsTab(root, entry) {
   const sbS = attachSaveBar(entry, { id: 'btnSaveSettings', onSave: saveForm });
   sbS.trackInputs(mainCard);
   if (featureOn('cloud')) root.append(CloudUI.mediaCard());
-  root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '旅遊日誌 v13'));
+  root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '旅遊日誌 v14'));
 }
 
 /* ---------- 啟動 ---------- */
@@ -1431,7 +1431,17 @@ else {
 }
 if (navigator.storage && navigator.storage.persist) { navigator.storage.persist().catch(() => { /* 不影響主功能 */ }); }
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('sw.js').catch(() => { /* 離線功能不可用,不影響主功能 */ });
+  // 每次開啟/切回 App 就檢查新版;新版接手後自動重新載入一次(有開著的編輯頁就等回到主畫面再重載)
+  const hadController = !!navigator.serviceWorker.controller;
+  let pendingReload = false;
+  const reloadNow = () => { if (stack.length) { pendingReload = true; return; } pendingReload = false; location.reload(); };
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) reloadNow(); });
+  navigator.serviceWorker.register('sw.js').then((reg) => {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      if (pendingReload) reloadNow(); else reg.update().catch(() => { /* 沒網路就下次再查 */ });
+    });
+  }).catch(() => { /* 離線功能不可用,不影響主功能 */ });
 }
 window.addEventListener('online', () => { if (!stack.length) homeRefresh(); });
 
