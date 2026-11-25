@@ -17,11 +17,11 @@ export function createFirebaseStore(dbUrl, opts) {
     if (!opts.getToken) return null;
     try { return await opts.getToken(force); } catch (e) { throw new NetError('AUTH_EXPIRED', e && e.message ? e.message : '登入已過期,請重新登入'); }
   }
-  async function call(method, path, body, retried, ifNew) {
+  async function call(method, path, body, retried, ifNew, tmo) {
     const tok = await token(false);
     let res;
     const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timer = ac ? setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS) : null;
+    const timer = ac ? setTimeout(() => ac.abort(), tmo || FETCH_TIMEOUT_MS) : null;
     try {
       res = await fetch(withAuth(url(path), tok), { method, signal: ac ? ac.signal : undefined, headers: body !== undefined ? Object.assign({ 'content-type': 'application/json' }, ifNew ? { 'if-match': 'null_etag' } : {}) : undefined, body: body !== undefined ? JSON.stringify(body) : undefined });
     } catch (e) {
@@ -32,7 +32,7 @@ export function createFirebaseStore(dbUrl, opts) {
       let msg = '';
       try { const j = await res.json(); msg = String((j && j.error) || ''); } catch (_) { /* 沒有內容 */ }
       if (opts.getToken && tok && EXPIRED_RE.test(msg) && !/permission denied/i.test(msg)) {
-        if (!retried) { await token(true); return call(method, path, body, true, ifNew); }
+        if (!retried) { await token(true); return call(method, path, body, true, ifNew, tmo); }
         throw new NetError('AUTH_EXPIRED', '登入已過期,請重新登入');
       }
       throw new NetError('PERMISSION', '你沒有權限做這件事');
@@ -51,7 +51,8 @@ export function createFirebaseStore(dbUrl, opts) {
     // o.ifNew:只在該路徑目前沒有資料時寫入(If-Match: null_etag),已存在 → 丟 EXISTS
     async put(path, value, o) { await call('PUT', path, value, false, !!(o && o.ifNew)); },
     // 多路徑更新:obj 的鍵是相對 path 的路徑,值為 null = 刪除;可含 {".sv":"timestamp"}
-    async patch(path, obj) { await call('PATCH', path, obj); },
+    // o.timeoutMs:大量資料(例如照片)可放寬逾時
+    async patch(path, obj, o) { await call('PATCH', path, obj, false, false, o && o.timeoutMs); },
     async remove(path) { await call('DELETE', path); },
     // cb(value) 每次資料變動回傳完整值;onError(err):err.soft = true 表示暫時斷線會自動重連
     // o.poll = true:不佔串流連線,改定時 GET(給次要節點用,見上方 MAX_SSE 說明)

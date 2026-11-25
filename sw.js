@@ -1,4 +1,4 @@
-const VERSION = 'v11';
+const VERSION = 'v12';
 const CACHE = 'phototool-' + VERSION;
 const PRECACHE = [
   './',
@@ -7,6 +7,15 @@ const PRECACHE = [
   './css/app.css',
   './css/v3.css',
   './css/tj.css',
+  './css/tj_theme.css',
+  './img/wall_login_p.webp',
+  './img/wall_login_l.webp',
+  './img/wall_p.webp',
+  './img/wall_l.webp',
+  './img/tex_wood.webp',
+  './img/tex_cork.webp',
+  './img/frame_red.webp',
+  './img/disc_wood.webp',
   './js/app.js',
   './js/db.js',
   './js/ai.js',
@@ -26,6 +35,8 @@ const PRECACHE = [
   './js/auth.js',
   './js/journalnet.js',
   './js/busy.js',
+  './js/ui_form.js',
+  './js/ui_event.js',
   './js/tjctx.js',
   './js/ui_login.js',
   './js/ui_jhome.js',

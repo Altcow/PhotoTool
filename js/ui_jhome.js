@@ -24,6 +24,7 @@ export async function startJournalApp(main) {
   mainEl = main;
   mainEl.style.background = 'var(--bg)';
   window.Journal.setRules(JOURNAL_RULES);
+  document.body.classList.add('tj-theme');   // 木牆主題(css/tj_theme.css),只在旅遊日誌模式
   try {   // 開發用:?mock=1 / ?mock=0 切換模擬模式(畫面上沒有任何入口)
     const mq = new URLSearchParams(location.search).get('mock');
     if (mq !== null) { saveSettings(Object.assign({}, getSettings(), { useMock: mq === '1' })); Auth.resetBackend(); }
@@ -110,14 +111,15 @@ function mountShell() {
 
   // 路由與版面
   const render = () => {
-    const route = parseRoute(location.hash), isWide = wide(), key = route.jid + '|' + route.eid + '|' + isWide;
+    const route = parseRoute(location.hash), isWide = wide(), key = route.jid + '|' + route.eid + '|' + route.mk + '|' + isWide;
     drawList();
     document.body.classList.toggle('tj-wide', isWide);
+    document.body.classList.toggle('tj-has-detail', !!route.jid);
     if (key === s.detailKey) return;
     s.detailKey = key;
     if (s.detail) { s.detail.dispose(); s.detail = null; }
     if (!route.jid) { right.style.visibility = ''; return; }
-    const back = route.eid ? () => setHash('#/j/' + route.jid) : (isWide ? null : () => setHash('#/'));
+    const back = route.mk ? () => setHash('#/j/' + route.jid + '/e/' + route.eid) : route.eid ? () => setHash('#/j/' + route.jid) : (isWide ? null : () => setHash('#/'));
     s.detail = mountDetail(route, { inline: isWide, onBack: back, openAccount });
     const scr = document.getElementById('screens');
     scr.insertBefore(s.detail.el, scr.firstChild);   // 放最底層,不會蓋在已開啟的表單上

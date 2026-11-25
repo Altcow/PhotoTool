@@ -3,64 +3,14 @@
 import { el, pushScreen, popScreen, toast } from './app.js';
 import { ctx, accountChip, richText, setHash } from './tjctx.js';
 import * as busy from './busy.js';
+import { openForm, act } from './ui_form.js';
+import { eventView as eventPage, menuView as menuPage, eventMem } from './ui_event.js';
 
 const J = () => window.Journal;
 const T = v => J().txt(v);
 const ROLE_ICON = { text: '📝', nav: '📍', photo: '🖼', file: '📄', menu: '🍽' };
 const OTHER = '__other';
 const synced = {};   // 本次開啟期間已同步過首頁索引的 jid+角色
-
-// 一個動作 = 遮罩 + 失敗可重試;回傳 {ok, value, error}
-const act = (fn, text, okToast, extra) => busy.run(fn, Object.assign({ text, okToast }, extra || {}));
-
-/* ---------- 共用:表單頁 ---------- */
-// fields: [{key,label,type:'text'|'textarea'|'date'|'checkbox'|'select',value,max,hint,required,options,inputmode,showIf:{key,value}}]
-// guard: {cur:()=>number(目前已知的 updatedAt), base:number}(儲存前比對,有人剛改過就問是否覆蓋;用已訂閱的資料,不多一次網路往返)
-// onSave(values, slot):slot 是這個表單專用的物件,新增類動作用它保存「第一次配到的格子 id」,逾時重試沿用同一個
-function openForm({ title, fields, banner, guard, okText, onSave, savingText }) {
-  pushScreen(title, body => {
-    const inputs = {}, rows = {};
-    const slot = {};
-    const err = el('div', { class: 'banner warn', id: 'frmErr', style: 'display:none' });
-    body.append(err);
-    if (banner) body.append(el('div', { class: 'banner', id: 'frmBanner' }, banner));
-    const enterBlur = e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } };   // iPhone 鍵盤「前往/完成」只收鍵盤,不送出
-    fields.forEach(f => {
-      let inp;
-      const val = T(f.value);
-      if (f.type === 'textarea') { inp = el('textarea', { id: 'f_' + f.key, rows: 6, maxlength: f.max || null }); inp.value = val; }
-      else if (f.type === 'checkbox') inp = el('input', { type: 'checkbox', id: 'f_' + f.key, checked: !!f.value, style: 'width:22px;height:22px' });
-      else if (f.type === 'select') {
-        inp = el('select', { id: 'f_' + f.key, class: 'tj-sel' }, f.options.map(o => el('option', { value: o.value }, o.label)));
-        inp.value = val;
-        if (inp.value !== val && f.options.length) inp.value = f.options[0].value;
-      } else { inp = el('input', { type: f.type || 'text', id: 'f_' + f.key, maxlength: f.max || null, placeholder: f.placeholder || '', inputmode: f.inputmode || null, autocomplete: 'off', onkeydown: enterBlur }); inp.value = val; }
-      inputs[f.key] = inp;
-      const row = f.type === 'checkbox'
-        ? el('label', { class: 'row', style: 'margin:12px 0' }, inp, f.label)
-        : el('div', {}, el('label', { class: 'f', for: 'f_' + f.key }, f.label + (f.required ? '(必填)' : '')), inp, f.hint ? el('div', { class: 'muted small' }, f.hint) : null);
-      rows[f.key] = row; body.append(row);
-    });
-    const syncShow = () => fields.forEach(f => { if (f.showIf) rows[f.key].style.display = inputs[f.showIf.key].value === f.showIf.value ? '' : 'none'; });
-    fields.forEach(f => { if (f.type === 'select') inputs[f.key].onchange = syncShow; });
-    syncShow();
-    const ok = el('button', { class: 'big-btn primary', id: 'frmOk', style: 'margin-top:16px' }, okText || '儲存');
-    ok.onclick = async () => {
-      if (ok.disabled) return;
-      const v = {};
-      fields.forEach(f => { v[f.key] = f.type === 'checkbox' ? inputs[f.key].checked : inputs[f.key].value; });
-      err.style.display = 'none';
-      const missing = fields.find(f => f.required && !(f.showIf && inputs[f.showIf.key].value !== f.showIf.value) && !String(v[f.key]).trim());
-      if (missing) { err.textContent = missing.label + '不能空白'; err.style.display = ''; return; }
-      if (guard && guard.cur() !== guard.base && !confirm('有人剛改過這份內容,要用你的版本覆蓋嗎?')) return;
-      ok.disabled = true;
-      const r = await act(() => onSave(v, slot), savingText || '儲存中…', '已儲存');
-      if (r.ok) { popScreen(); return; }
-      err.textContent = (r.error && r.error.message) || '儲存失敗'; err.style.display = ''; ok.disabled = false;   // 表單不關、輸入不遺失
-    };
-    body.append(ok);
-  });
-}
 
 /* ---------- 進入點 ---------- */
 export function mountDetail(route, o) {
@@ -77,6 +27,7 @@ export function mountDetail(route, o) {
   let state = null, locked = false, lockInfo = null, off = null, offF = null, following = false, disposed = false, open = {};
   let banned = null, myReq = undefined;
   const hook = { fn: null };
+  const mem = eventMem();   // 事件頁:縮圖、點餐單訂閱、清單摘要
   const roleNow = () => (state && state.meta ? window.Policy.roleOf(ctx.uid, state.meta, state.members) : null);
 
   const loadLock = async () => {
@@ -109,7 +60,8 @@ export function mountDetail(route, o) {
     if (!role && banned === null) { banned = false; ctx.jn.amBanned(jid).then(b => { banned = !!b; if (!disposed) render(); }).catch(() => { /* 查不到就當沒被移出 */ }); }
     if (role === 'member' && myReq === undefined) { myReq = null; ctx.jn.myReq(jid).then(r => { myReq = r || null; if (!disposed) render(); }).catch(() => { /* 略過 */ }); }
     if (J().settingsAccess(role).gear) gearHolder.append(el('button', { class: 'tj-gear', id: 'tjGear', 'aria-label': '日誌設定', onclick: () => openSettings(jid, () => state, role, sub, hook) }, '⚙'));
-    body.replaceChildren(...[].concat(route.eid ? eventView(role) : journalView(role)));
+    const cx = { jid, eid: route.eid, mk: route.mk, get state() { return state; }, role, canEdit: window.Policy.can(role, 'edit'), open, render, mem, titleEl };
+    body.replaceChildren(...[].concat(route.mk ? menuPage(cx) : route.eid ? eventPage(cx) : journalView(role)));
   };
 
   const removeBtn = () => el('div', { style: 'margin-top:8px' }, el('button', { class: 'btn', id: 'tjRemoveFromList', onclick: async () => { const r = await act(() => ctx.jn.removeFromList(jid), '處理中…', '已從清單移除'); if (r.ok) setHash('#/'); } }, '從清單移除'));
@@ -143,9 +95,8 @@ export function mountDetail(route, o) {
 
   /* ---------- 日誌頁 ---------- */
   const actionRow = (key, buttons) => (open[key] ? el('div', { class: 'tj-actions' }, buttons) : null);
-  const moreBtn = key => el('button', { class: 'btn sm tj-more-btn', 'aria-label': '更多(上移、下移、刪除)', 'aria-expanded': open[key] ? 'true' : 'false', onclick: () => { open[key] = !open[key]; render(); } }, open[key] ? '收起' : '更多');
-  // 編輯者看得到的一排字:「編輯」「更多」(更多 = 上移/下移/刪除)
-  const editRow = (key, onEdit) => el('div', { class: 'tj-edit-row' }, el('button', { class: 'btn sm primary tj-edit-btn', onclick: onEdit }, '編輯'), moreBtn(key));
+  // 編輯者看得到字的「管理」按鈕,展開 編輯/上移/下移/刪除(事件頁的區塊也一樣)
+  const editRow = key => el('div', { class: 'tj-edit-row' }, el('button', { class: 'btn sm tj-manage', 'aria-expanded': open[key] ? 'true' : 'false', onclick: () => { open[key] = !open[key]; render(); } }, open[key] ? '收起' : '管理'));
 
   function journalView(role) {
     const L = J(), meta = state.meta, j = state.j, canEdit = window.Policy.can(role, 'edit');
@@ -194,11 +145,12 @@ export function mountDetail(route, o) {
     const notices = L.sortedList(j.notices).sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
     kids.push(el('div', { class: 'card', id: 'tjNotices' },
       el('div', { class: 'row' }, el('b', { class: 'grow' }, '公告'), canEdit ? el('button', { class: 'btn sm primary', id: 'tjAddNotice', onclick: () => editNotice(null) }, '＋公告') : null),
-      notices.length ? notices.map(n => el('div', { class: 'tj-item', 'data-nid': n.id },
+      notices.length ? notices.map(n => el('div', { class: 'tj-item' + (n.pinned ? ' pinned' : ''), 'data-nid': n.id },
         el('details', { open: !!open['n' + n.id + 'x'], ontoggle: e => { open['n' + n.id + 'x'] = e.target.open; } },
           el('summary', { class: 'tj-sum' }, (n.pinned ? '📌 ' : '') + (T(n.title) || '(沒有標題)')),
           T(n.body) ? richText(T(n.body)) : el('div', { class: 'muted' }, '(沒有內容)')),
-        canEdit ? [editRow('n' + n.id, () => editNotice(n)), actionRow('n' + n.id, [
+        canEdit ? [editRow('n' + n.id), actionRow('n' + n.id, [
+          el('button', { class: 'btn sm', onclick: () => editNotice(n) }, '編輯'),
           el('button', { class: 'btn sm', onclick: () => move('notices', j.notices, n.id, 'up') }, '上移'),
           el('button', { class: 'btn sm', onclick: () => move('notices', j.notices, n.id, 'down') }, '下移'),
           el('button', { class: 'btn sm danger', onclick: () => del('刪除公告「' + T(n.title) + '」?', () => ctx.jn.deleteNotice(jid, n.id)) }, '刪除')])] : null))
@@ -215,39 +167,26 @@ export function mountDetail(route, o) {
             el('button', { class: 'tj-evmain', onclick: () => setHash('#/j/' + jid + '/e/' + e.id) },
               el('span', { class: 'tj-no sm' }, String(i + 1)),
               el('span', { class: 'tj-evt' }, el('b', {}, T(e.title)), el('small', {}, [L.md(T(e.date)), icons.join('')].filter(Boolean).join('  '))))),
-          canEdit ? [editRow('e' + e.id, () => editEvent(e)), actionRow('e' + e.id, [
+          canEdit ? [editRow('e' + e.id), actionRow('e' + e.id, [
+            el('button', { class: 'btn sm', onclick: () => editEvent(e) }, '編輯'),
             el('button', { class: 'btn sm', onclick: () => move('events', j.events, e.id, 'up') }, '上移'),
             el('button', { class: 'btn sm', onclick: () => move('events', j.events, e.id, 'down') }, '下移'),
-            el('button', { class: 'btn sm danger', onclick: () => del('刪除事件「' + T(e.title) + '」?' + (blocks.length ? '裡面的 ' + blocks.length + ' 個內容會一併刪除。' : ''), () => ctx.jn.deleteEvent(jid, e.id)) }, '刪除')])] : null);
+            el('button', { class: 'btn sm danger', onclick: () => delEvent(e, blocks) }, '刪除')])] : null);
       }) : el('div', { class: 'muted' }, canEdit ? '還沒有事件,按「＋事件」新增(例如:第一天)' : '目前沒有事件')));
     if (role === 'member' || role === 'editor') kids.push(el('div', { style: 'text-align:center;margin:14px 0' }, el('button', { class: 'btn sm', id: 'tjLeave', onclick: async () => { if (!confirm('要退出這本日誌嗎?')) return; const r = await act(() => ctx.jn.leave(jid), '處理中…', '已退出'); if (r.ok) setHash('#/'); } }, '退出日誌')));
-    return kids;
-  }
-
-  /* ---------- 事件頁 ---------- */
-  function eventView(role) {
-    const L = J(), ev = (state.j.events || {})[route.eid], canEdit = window.Policy.can(role, 'edit');
-    if (!ev) return el('div', { class: 'card', id: 'tjEvGone' }, '找不到這個事件(可能已被刪除)');
-    titleEl.textContent = T(ev.title);
-    const blocks = L.sortedList((state.j.blocks || {})[route.eid]);
-    const kids = [el('div', { class: 'card', id: 'tjEvInfo' }, el('b', {}, T(ev.title)), el('div', { class: 'muted' }, L.md(T(ev.date)) || '沒有日期'),
-      canEdit ? el('button', { class: 'btn sm primary', id: 'tjEditEvent', style: 'margin-top:6px', onclick: () => editEvent({ id: route.eid, title: ev.title, date: ev.date }) }, '編輯標題/日期') : null)];
-    kids.push(el('div', { id: 'tjBlocks' }, blocks.length ? blocks.map(b => el('div', { class: 'tj-block', 'data-bid': b.id },
-      b.type === 'nav' && L.isHttpsUrl(b.url)
-        ? el('a', { class: 'big-btn', href: b.url, target: '_blank', rel: 'noopener noreferrer' }, el('span', { class: 'bi' }, '📍'), T(b.title))
-        : el('div', { class: 'card' }, richText(T(b.text) || T(b.title))),
-      canEdit ? [editRow('b' + b.id, () => editBlock(b)), actionRow('b' + b.id, [
-        el('button', { class: 'btn sm', onclick: () => move('blocks/' + route.eid, (state.j.blocks || {})[route.eid], b.id, 'up') }, '上移'),
-        el('button', { class: 'btn sm', onclick: () => move('blocks/' + route.eid, (state.j.blocks || {})[route.eid], b.id, 'down') }, '下移'),
-        el('button', { class: 'btn sm danger', onclick: () => del('刪除這個內容?', () => ctx.jn.deleteBlock(jid, route.eid, b.id)) }, '刪除')])] : null))
-      : el('div', { class: 'muted', style: 'padding:8px' }, canEdit ? '還沒有內容,按下面「＋ 加內容」' : '這個事件還沒有內容')));
-    if (canEdit) kids.push(el('button', { class: 'big-btn primary', id: 'tjAddBlock', onclick: () => openAddContent() }, '＋ 加內容'));
     return kids;
   }
 
   /* ---------- 編輯動作 ---------- */
   const move = (path, map, id, dir) => act(() => ctx.jn.moveItem(jid, path, map, id, dir), '移動中…');
   const del = async (msg, fn) => { if (!confirm(msg)) return; await act(fn, '刪除中…', '已刪除'); };
+  const delEvent = async (e, blocks) => {
+    const ph = Object.keys(((state.j.photos || {})[e.id]) || {}).length, menus = blocks.filter(b => b.type === 'menu').length, other = blocks.length - menus;
+    const parts = [ph ? ph + ' 張照片' : '', menus ? menus + ' 份點餐單(含點單)' : '', other ? other + ' 個內容' : ''].filter(Boolean);
+    if (!confirm('刪除事件「' + T(e.title) + '」?' + (parts.length ? '會一併刪除 ' + parts.join('、') + '。' : ''))) return;
+    const r = await act(() => ctx.jn.deleteEvent(jid, e.id, (state.j.blocks || {})[e.id]), '刪除中…', '已刪除');
+    if (r.ok && r.value && r.value.partial) toast('事件已刪除;部分點餐或照片資料要等功能更新後才會清掉', 3500);
+  };
   const stamp = get => () => { try { return Number(get()) || 0; } catch (_) { return 0; } };
   const editAbout = about => {
     const L = J(), meta = state.meta, opts = L.leaderOptions(state.members, meta.ownerUid);
@@ -291,31 +230,9 @@ export function mountDetail(route, o) {
       onSave: (v, slot) => (e ? ctx.jn.updateEvent(jid, e.id, v) : (slot.cur = slot.cur || state.j.events || {}, ctx.jn.addEvent(jid, v, slot))),
     });
   };
-  const openAddContent = () => pushScreen('加內容', b2 => {
-    b2.append(el('div', { class: 'big-grid' },
-      el('button', { class: 'big-btn', id: 'addText', onclick: () => { popScreen(); editBlock({ type: 'text' }); } }, el('span', { class: 'bi' }, '📝'), '文字'),
-      el('button', { class: 'big-btn', id: 'addNav', onclick: () => { popScreen(); editBlock({ type: 'nav' }); } }, el('span', { class: 'bi' }, '📍'), '導覽(標題+網址按鈕)')));
-  });
-  const editBlock = b => {
-    const isNav = b.type === 'nav', isNew = !b.id;
-    openForm({
-      title: (isNew ? '新增' : '編輯') + (isNav ? '導覽' : '文字'),
-      guard: isNew ? null : { cur: stamp(() => ((((state.j.blocks || {})[route.eid]) || {})[b.id] || {}).updatedAt), base: b.updatedAt || 0 },
-      fields: isNav
-        ? [{ key: 'title', label: '標題名稱(例如:動物園導引)', value: b.title, max: 60, required: true }, { key: 'url', label: '網址(Google 地圖分享連結等,https:// 開頭)', type: 'url', value: b.url, max: 2000, required: true }]
-        : [{ key: 'text', label: '文字', type: 'textarea', value: b.text, max: 4000, required: true }],
-      onSave: (v, slot) => {
-        const f = Object.assign({ type: b.type }, v);
-        if (!isNew) return ctx.jn.updateBlock(jid, route.eid, b.id, f);
-        slot.cur = slot.cur || (state.j.blocks || {})[route.eid] || {};
-        return ctx.jn.addBlock(jid, route.eid, f, slot);
-      },
-    });
-  };
-
   sub();
   offF = ctx.jn.watchFollow(jid, v => { following = v; if (state && !disposed) render(); }, () => { /* 追蹤狀態讀不到就當沒追蹤 */ });
-  return { el: sec, dispose() { disposed = true; if (off) off(); if (offF) offF(); sec.remove(); } };
+  return { el: sec, dispose() { disposed = true; if (off) off(); if (offF) offF(); mem.dispose(); sec.remove(); } };
 }
 
 /* ---------- 日誌設定頁(右上 ⚙)---------- */

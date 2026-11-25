@@ -4,8 +4,8 @@
   else root.Journal = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
   var CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  var LIM = { title: 60, name: 30, about: 2000, leader: 30, phone: 30, noticeBody: 2000, blockText: 4000, blockTitle: 60, url: 2000, avatarPhoto: 16000 };
-  var SLOTS = { notice: ['n', 50, 2], link: ['l', 30, 2], event: ['e', 99, 3], block: ['b', 60, 2], phrase: ['p', 80, 2] };
+  var LIM = { title: 60, name: 30, about: 2000, leader: 30, phone: 30, noticeBody: 2000, blockText: 4000, blockTitle: 60, url: 2000, avatarPhoto: 16000, desc: 4000, itemName: 40, itemNote: 40, menuItems: 120, photoCap: 60, thumbB64: 40000, fullB64: 360000, photosPerJournal: 150, photosPerPick: 10 };
+  var SLOTS = { notice: ['n', 50, 2], link: ['l', 30, 2], event: ['e', 99, 3], block: ['b', 60, 2], phrase: ['p', 80, 2], photo: ['i', 30, 2], order: ['s', 200, 3] };
 
   // 可由 config.js 的 JOURNAL_RULES 覆寫(setRules)。注意:jidLen 要和 Firebase 規則的 jid regex 一致(rules_tj.js JID_LEN)。
   var JID_LEN = 10;
@@ -71,8 +71,9 @@
       .sort(function (a, b) { return (Number(a.order) || 0) - (Number(b.order) || 0) || (a.id < b.id ? -1 : 1); });
   }
   // 上移/下移 = 與鄰居交換 order;回傳 {a:{id,order}, b:{id,order}} 或 null(已在邊界)
-  function swapOrder(map, id, dir) {
-    var list = sortedList(map), i = list.findIndex(function (x) { return x.id === id; });
+  // keep(item) 可只在同一類(例如同 type 的區塊)之間交換
+  function swapOrder(map, id, dir, keep) {
+    var list = sortedList(map).filter(function (x) { return !keep || x.id === id || keep(x); }), i = list.findIndex(function (x) { return x.id === id; });
     var j = dir === 'up' ? i - 1 : i + 1;
     if (i < 0 || j < 0 || j >= list.length) return null;
     var oa = list[i].order, ob = list[j].order;
@@ -227,6 +228,71 @@
     return { gear: role === 'owner' || role === 'editor', invite: role === 'owner' || role === 'editor', members: role === 'owner' || role === 'editor', manage: role === 'owner' };
   }
 
+  // ---- 事件頁(文章、選項方塊、選單、照片)----
+  function isTime(s) { return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(s || '')); }
+  // 開始/結束時間檢查:回傳錯誤文字或 ''
+  function checkTimes(time, endTime) {
+    if (time && !isTime(time)) return '開始時間格式不對';
+    if (endTime && !isTime(endTime)) return '結束時間格式不對';
+    if (endTime && !time) return '請先填開始時間';
+    if (time && endTime && endTime <= time) return '結束時間要晚於開始時間';
+    return '';
+  }
+  function fmtTimes(time, endTime) { return isTime(time) ? time + (isTime(endTime) ? '~' + endTime : '') : ''; }
+  function menuListTitle(n) { return '選單 ' + n; }
+  // 選項方塊的三個 tab
+  var OPT_TABS = [['menu', '🍽 選單'], ['nav', '📍 導覽'], ['file', '📄 附件']];
+  function tabCounts(blocks) {
+    var c = { menu: 0, nav: 0, file: 0 };
+    Object.keys(blocks || {}).forEach(function (k) { var t = blocks[k] && blocks[k].type; if (c[t] !== undefined) c[t]++; });
+    return c;
+  }
+  // 編輯者三個都看得到;成員只看有內容的
+  function visibleTabs(counts, canEdit) { return OPT_TABS.map(function (t) { return t[0]; }).filter(function (t) { return canEdit || counts[t] > 0; }); }
+  // 預設 tab:上次記錄(還看得到)→ 第一個有內容 → 第一個可見
+  function defaultTab(saved, counts, canEdit) {
+    var vis = visibleTabs(counts, canEdit);
+    if (saved && vis.indexOf(saved) >= 0) return saved;
+    for (var i = 0; i < vis.length; i++) if (counts[vis[i]] > 0) return vis[i];
+    return vis[0] || null;
+  }
+  function fileMime(url) {
+    var s = String(url || '').toLowerCase();
+    if (/\.pdf\b/.test(s)) return 'pdf';
+    if (/\.docx?\b|docs\.google\.com\/document/.test(s)) return 'doc';
+    if (/\.xlsx?\b|\.csv\b|docs\.google\.com\/spreadsheets/.test(s)) return 'xls';
+    if (/\.txt\b/.test(s)) return 'txt';
+    if (/\.(jpe?g|png|gif|heic|webp)\b/.test(s)) return 'img';
+    return 'other';
+  }
+  // 點餐清單 key:<eNNN>_<bNN>
+  function menuKey(eid, bid) { return eid + '_' + bid; }
+  function parseMenuKey(k) { var m = /^(e\d{3})_(b\d{2})$/.exec(String(k || '')); return m ? { eid: m[1], bid: m[2] } : null; }
+  function menuKind(meta, menu) { var k = (meta && meta.kind) || (menu && menu.kind); return k === 'general' ? 'general' : 'drink'; }
+  // 刪除整個事件的多路徑(相對 tj/):事件、區塊、照片三處、這個事件每一份點餐單
+  function deleteEventPaths(jid, eid, blocksOfEvent) {
+    var w = {};
+    w['j/' + jid + '/events/' + eid] = null; w['j/' + jid + '/blocks/' + eid] = null; w['j/' + jid + '/photos/' + eid] = null;
+    w['img/' + jid + '/' + eid] = null; w['imgf/' + jid + '/' + eid] = null;
+    Object.keys(blocksOfEvent || {}).forEach(function (b) { if (blocksOfEvent[b] && blocksOfEvent[b].type === 'menu') w['jm/' + jid + '/' + menuKey(eid, b)] = null; });
+    return w;
+  }
+  // 照片:長邊縮放、壓縮降級序列、base64 檢查、快取 key、版本碼、張數上限
+  function fitScale(w, h, maxLong) { var k = Math.min(1, maxLong / Math.max(w, h)); return { w: Math.max(1, Math.round(w * k)), h: Math.max(1, Math.round(h * k)) }; }
+  var FULL_STEPS = [{ long: 1280, q: 0.7 }, { long: 1280, q: 0.6 }, { long: 1024, q: 0.6 }, { long: 1024, q: 0.5 }, { long: 800, q: 0.5 }];
+  var THUMB_STEPS = [{ long: 320, q: 0.6 }, { long: 320, q: 0.45 }, { long: 240, q: 0.45 }];
+  // 大圖目標 ≤ 240 KB(base64 約 320,000 字);硬上限 360,000 字(規則)
+  function fullOk(b64, step) { var n = String(b64 || '').length; return step < FULL_STEPS.length - 1 ? n <= 320000 : n <= LIM.fullB64; }
+  function validB64(b64, max) { b64 = String(b64 || ''); return b64.length > 4 && b64.length <= max && b64.indexOf('/9j/') === 0; }
+  function photoKey(jid, eid, iid, v, kind) { return jid + '/' + eid + '/' + iid + '/' + v + '/' + kind; }
+  function photoV(rand) { rand = rand || Math.random; var c = 'abcdefghijklmnopqrstuvwxyz0123456789', s = ''; for (var i = 0; i < 6; i++) s += c[Math.floor(rand() * c.length)]; return s; }
+  function countPhotos(photos) { var n = 0; Object.keys(photos || {}).forEach(function (e) { n += Object.keys(photos[e] || {}).length; }); return n; }
+  // 這次最多還能傳幾張:每事件格子數、每日誌上限、一次選取上限
+  function photoRoom(photosAll, eid) {
+    var inEvent = Object.keys((photosAll || {})[eid] || {}).length;
+    return Math.max(0, Math.min(SLOTS.photo[1] - inEvent, LIM.photosPerJournal - countPhotos(photosAll), LIM.photosPerPick));
+  }
+
   // 領隊下拉選項:成員(主編第一)+「其他(自行輸入)」;members = {uid:{name,role,joinedAt}}
   function leaderOptions(members, ownerUid) {
     var list = Object.keys(members || {}).map(function (u) { return { uid: u, name: txt(members[u].name) || '(未命名)', role: members[u].role, joinedAt: Number(members[u].joinedAt) || 0 }; });
@@ -244,5 +310,8 @@
     genInviteCode: genInviteCode, isInviteCode: isInviteCode, inviteUrl: inviteUrl, parseInvite: parseInvite, inviteValid: inviteValid, settingsAccess: settingsAccess,
     setRules: setRules, jidPattern: jidPattern, txt: txt, validPw: validPw, pwRule: pwRule, pwHashInput: pwHashInput, triesLeft: triesLeft, nextTryN: nextTryN, TRY_MAX: TRY_MAX,
     leaderOptions: leaderOptions,
+    isTime: isTime, checkTimes: checkTimes, fmtTimes: fmtTimes, menuListTitle: menuListTitle, OPT_TABS: OPT_TABS, tabCounts: tabCounts, visibleTabs: visibleTabs, defaultTab: defaultTab,
+    fileMime: fileMime, menuKey: menuKey, parseMenuKey: parseMenuKey, menuKind: menuKind, deleteEventPaths: deleteEventPaths,
+    fitScale: fitScale, FULL_STEPS: FULL_STEPS, THUMB_STEPS: THUMB_STEPS, fullOk: fullOk, validB64: validB64, photoKey: photoKey, photoV: photoV, countPhotos: countPhotos, photoRoom: photoRoom,
   };
 });

@@ -41,9 +41,27 @@
   var IDX_RE = '/^[A-HJ-NP-Z2-9]{' + JID_LEN + '}$/';
   var SLOT = {
     n: '/^n(0[1-9]|[1-4][0-9]|50)$/', l: '/^l(0[1-9]|[12][0-9]|30)$/', e: '/^e(00[1-9]|0[1-9][0-9])$/',
-    b: '/^b(0[1-9]|[1-5][0-9]|60)$/', p: '/^p(0[1-9]|[1-7][0-9]|80)$/', s: '/^s(00[1-9]|0[1-9][0-9]|1[0-9][0-9]|200)$/', k: '/^e\\d{3}_b\\d{2}$/',
+    b: '/^b(0[1-9]|[1-5][0-9]|60)$/', p: '/^p(0[1-9]|[1-7][0-9]|80)$/', s: '/^s(00[1-9]|0[1-9][0-9]|1[0-9][0-9]|200)$/', k: '/^e\\d{3}_b\\d{2}$/', i: '/^i(0[1-9]|[12][0-9]|30)$/',
   };
   function slotKey(re, v) { return v + '.matches(' + re + ')'; }
+  // R10:建立時格子必須是空的;修改時 field 不能變(兩人同時新增時,後到的被擋下換格,不會蓋掉別人)
+  function keepField(field) { return "(!data.exists() || !newData.exists() || newData.child('" + field + "').val() === data.child('" + field + "').val())"; }
+  // 照片/縮圖/大圖節點:公開日誌任何人可讀、私密只限成員(與 j/ 相同)
+  function imgNode(field, max) {
+    return {
+      '.read': PUB + ' || (' + A + ' && ' + MEM + ')',
+      '.write': A + ' && ' + OWN + ' && !newData.exists()',
+      $e: {
+        '.write': A + ' && ' + EDIT + ' && !newData.exists()',
+        $i: {
+          '.write': A + ' && ' + EDIT,
+          '.validate': slotKey(SLOT.e, '$e') + ' && ' + slotKey(SLOT.i, '$i') + " && newData.hasChildren(['" + field + "'])",
+          [field]: { '.validate': "newData.isString() && newData.val().length <= " + max + " && newData.val().beginsWith('/9j/')" },
+          $other: OTHER,
+        },
+      },
+    };
+  }
 
   function build() {
     var jmemWrite = A + ' && ('
@@ -149,31 +167,44 @@
             '.read': PUB + ' || (' + A + ' && ' + MEM + ')',
             '.write': A + ' && ' + OWN + ' && !newData.exists()',
             about: obj({ '.write': A + ' && ' + EDIT, text: str(0, 2000), leader: str(0, 30), leaderUid: str(0, 128), phone: str(0, 30), updatedAt: num, updatedBy: str(1, 128) }, ['text']),
-            notices: { $n: obj({ '.write': A + ' && ' + EDIT, '.validate': slotKey(SLOT.n, '$n') + " && newData.hasChildren(['title','body','order','at','by'])", title: str(1, 60), body: str(0, 2000), pinned: bool, order: num, at: num, by: str(1, 128), updatedAt: num }) },
+            notices: { $n: obj({ '.write': A + ' && ' + EDIT + ' && ' + keepField('at'), '.validate': slotKey(SLOT.n, '$n') + " && newData.hasChildren(['title','body','order','at','by'])", title: str(1, 60), body: str(0, 2000), pinned: bool, order: num, at: num, by: str(1, 128), updatedAt: num }) },
             links: { $l: obj({ '.write': A + ' && ' + EDIT, '.validate': slotKey(SLOT.l, '$l') + " && newData.hasChildren(['title','url','order'])", title: str(1, 60), url: https, order: num }) },
             events: {
               $e: obj({
-                '.write': A + ' && ' + EDIT, '.validate': slotKey(SLOT.e, '$e') + " && newData.hasChildren(['title','order','createdAt','by'])",
+                '.write': A + ' && ' + EDIT + ' && ' + keepField('createdAt'), '.validate': slotKey(SLOT.e, '$e') + " && newData.hasChildren(['title','order','createdAt','by'])",
                 title: str(1, 60), date: DATE, order: num, createdAt: num, by: str(1, 128), updatedAt: num,
-                time: TIME, endTime: TIME, tz: str(0, 40), location: str(0, 120), mapUrl: https, desc: str(0, 1000), rev: revUp,
+                time: TIME, endTime: TIME, tz: str(0, 40), location: str(0, 120), mapUrl: https, desc: str(0, 4000), rev: revUp,
                 prev: obj({ date: str(0, 10), time: str(0, 5), endTime: str(0, 5), location: str(0, 120), title: str(0, 60) }), changedAt: num,
               }),
             },
             phrases: { $p: obj({ '.write': A + ' && ' + EDIT, '.validate': slotKey(SLOT.p, '$p') + " && newData.hasChildren(['zh','tl'])", zh: str(1, 200), tl: str(1, 400), lang: str(0, 10), roma: str(0, 400), cat: str(0, 20), order: num }) },
-            blocks: { $e: { '.write': A + ' && ' + EDIT + ' && !newData.exists()', $b: Object.assign({}, jBlockFields, { '.write': A + ' && ' + EDIT, '.validate': slotKey(SLOT.e, '$e') + ' && ' + slotKey(SLOT.b, '$b') + " && newData.hasChildren(['type','order'])" }) } },
+            photos: {
+              $e: {
+                '.write': A + ' && ' + EDIT + ' && !newData.exists()',
+                $i: obj({
+                  '.write': A + ' && ' + EDIT + " && (!data.exists() || !newData.exists() || newData.child('v').val() === data.child('v').val())",
+                  '.validate': slotKey(SLOT.e, '$e') + ' && ' + slotKey(SLOT.i, '$i') + " && newData.hasChildren(['order','v','by','at'])",
+                  order: num, w: num, h: num, cap: str(0, 60), v: matches('/^[a-z0-9]{6}$/'), size: num, by: str(1, 128), at: num,
+                }),
+              },
+            },
+            blocks: { $e: { '.write': A + ' && ' + EDIT + ' && !newData.exists()', $b: Object.assign({}, jBlockFields, { '.write': A + ' && ' + EDIT + ' && ' + keepField('by'), '.validate': slotKey(SLOT.e, '$e') + ' && ' + slotKey(SLOT.b, '$b') + " && newData.hasChildren(['type','order'])" }) } },
           },
         },
+        img: { $jid: imgNode('t', 40000) },
+        imgf: { $jid: imgNode('d', 360000) },
         jm: {
           $jid: {
             '.read': A + ' && ' + MEM, '.write': A + ' && ' + OWN + ' && !newData.exists()',
             $k: {
+              '.write': A + ' && ' + EDIT + ' && !newData.exists()',
               '.validate': slotKey(SLOT.k, '$k'),
               meta: obj({
                 '.write': A + ' && (' + EDIT + ' || ' + MGR + ')',
                 title: str(1, 60), status: oneOf(['open', 'closed']), managerUid: { '.validate': "newData.isString() && root.child('tj/jmem/'+$jid+'/'+newData.val()).exists()" },
-                closeSeq: num, closedAt: num, closedBy: str(0, 128), deadline: num, mergeMode: oneOf(['separate', 'merged']), shopTotal: num, fee: num, createdAt: num,
+                kind: oneOf(['drink', 'general']), closeSeq: num, closedAt: num, closedBy: str(0, 128), deadline: num, mergeMode: oneOf(['separate', 'merged']), shopTotal: num, fee: num, createdAt: num,
               }, ['title', 'status', 'managerUid']),
-              menus: { $m: { '.write': A + ' && (' + EDIT + ' || ' + MGR + ') && ' + MOPEN, '.validate': "newData.hasChildren(['id'])" } },
+              menus: { $m: { '.write': A + ' && (' + EDIT + ' || ' + MGR + ') && ' + MOPEN, '.validate': "$m === 'm1' && newData.hasChildren(['id'])" } },
               orders: {
                 $o: obj({
                   '.write': orderWrite, '.validate': slotKey(SLOT.s, '$o') + " && newData.hasChildren(['uid','name','itemName','qty','ts'])",
@@ -192,7 +223,7 @@
 
   var NOTE = [
     '貼進「你自己的」Firebase 專案 → Realtime Database → 規則。不要用別人的專案。本檔由 tools/rules_src.js 產生(來源 js/lib/rules_tj.js),請改來源再重新產生,不要手改。',
-    '【狀態】v11:宗旨(j/<jid>/about)新增 leaderUid 欄位(領隊=成員代號);其餘與 v10 相同,v10 規則已在真實 Firebase 驗證過。貼上後請跑 node tools/test_rules_rest.js <資料庫網址> <API金鑰>(資料庫網址與 API 金鑰在 js/config.js),全過才發版。',
+    '【狀態】v12:事件內容 4000 字、照片(j/<jid>/photos、tj/img、tj/imgf)、副編可刪整份點餐單、點餐單類型 kind、菜單只有 m1、新增防撞號(公告/事件/區塊)。v11:宗旨(j/<jid>/about)新增 leaderUid 欄位(領隊=成員代號);其餘與 v10 相同,v10 規則已在真實 Firebase 驗證過。貼上後請跑 node tools/test_rules_rest.js <資料庫網址> <API金鑰>(資料庫網址與 API 金鑰在 js/config.js),全過才發版。',
     '【不含 pt/rooms】舊的 v3 開團房規則已移除(H-11)。要回復需把舊規則段貼回。',
     '【只靠客戶端、規則做不到】私密密碼每帳號每小時 5 次但可多註冊帳號猜;每人建立日誌數與成員人數上限;兩位編輯同時改同一區塊後寫覆蓋;整本刪除多路徑中途失敗會留殘留(重按刪除即可)。',
     '【白話提醒】開放註冊:任何拿到網址的人都能註冊並看到「所有日誌」的標題;公開日誌連結外流時,不用註冊就能看宗旨、公告、行程。不想這樣就設私密。',

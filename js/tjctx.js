@@ -1,12 +1,22 @@
 // 旅遊日誌共用狀態與小元件(登入者、頭像、帳號鈕、路由)。與 app.js 循環匯入,只在函式內使用。
 import { el } from './app.js';
 
+// 防呆:DOM 的 append/prepend/replaceChildren 收到 null、false、undefined 會變成文字「null」,收到陣列會變成「[object …]」。
+// v10 的「事件出現兩個 null」就是表單把沒有說明的欄位 append(null)。這裡統一略過空值、攤平陣列。
+['append', 'prepend', 'replaceChildren'].forEach(fn => {
+  const orig = Element.prototype[fn];
+  if (!orig || orig.__tjSafe) return;
+  const safe = function (...a) { return orig.apply(this, a.flat(Infinity).filter(x => x !== null && x !== undefined && x !== false)); };
+  safe.__tjSafe = true;
+  Element.prototype[fn] = safe;
+});
+
 export const ctx = { jn: null, uid: '', name: '', email: '', avatar: null, google: false, onLogout: null };
 
 export const setHash = h => { if (location.hash === h) window.dispatchEvent(new HashChangeEvent('hashchange')); else location.hash = h; };
 export function parseRoute(hash) {
-  const m = new RegExp('^#/j/(' + window.Journal.jidPattern() + ')(?:/e/(e\\d{3}))?$').exec(String(hash || ''));
-  return m ? { jid: m[1], eid: m[2] || '' } : { jid: '', eid: '' };
+  const m = new RegExp('^#/j/(' + window.Journal.jidPattern() + ')(?:/e/(e\\d{3})|/m/((e\\d{3})_b\\d{2}))?$').exec(String(hash || ''));
+  return m ? { jid: m[1], eid: m[2] || m[4] || '', mk: m[3] || '' } : { jid: '', eid: '', mk: '' };
 }
 
 // 頭像:預設姓名首字+底色圓;emoji;照片(data URL);Google(網址)

@@ -63,13 +63,13 @@
       .sort(function (a, b) { return (toInt(a.o.ts) - toInt(b.o.ts)) || String(a.o.id || '').localeCompare(String(b.o.id || '')) || (a.i - b.i); })
       .map(function (x) { return x.o; });
   }
-  // 依 clientId+名字分組;同名不同 clientId 自動區分「小唐」「小唐(2)」
+  // 依帳號 uid(舊版開團房用 clientId)+名字分組;同名不同人自動區分「小唐」「小唐(2)」
   function people(orders) {
     var map = {}, list = [];
     sortedOrders(orders).forEach(function (o) {
-      var key = (o.clientId || '') + '\u0001' + (o.name || '');
+      var key = (o.uid || o.clientId || '') + '\u0001' + (o.name || '');
       var p = map[key];
-      if (!p) { p = map[key] = { key: key, clientId: o.clientId || '', name: o.name || '(未命名)', display: '', orders: [], cups: 0, total: 0 }; list.push(p); }
+      if (!p) { p = map[key] = { key: key, uid: o.uid || '', clientId: o.clientId || '', name: o.name || '(未命名)', display: '', orders: [], cups: 0, total: 0 }; list.push(p); }
       p.orders.push(o); p.cups += cups(o); p.total += lineTotal(o); if (!hasPrice(o)) p.unpricedCups = (p.unpricedCups || 0) + cups(o);
     });
     var seen = {};

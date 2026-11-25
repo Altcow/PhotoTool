@@ -9,6 +9,8 @@ const RETRY_CODES = { TIMEOUT: 1, NETWORK: 1, HTTP: 1 };
 let depth = 0, overlay = null, saved = '', box = null;
 
 export const isBusy = () => depth > 0;
+// 處理中更新文字(例如「上傳中 3/7」)
+export const setText = text => { const t = document.getElementById('tjBusyText'); if (t) t.textContent = text; };
 globalThis.__tjBusy = isBusy;
 
 const onHash = e => {
