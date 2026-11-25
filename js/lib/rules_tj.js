@@ -37,7 +37,8 @@
     o.$other = OTHER;
     return o;
   }
-  var IDX_RE = '/^[A-HJ-NP-Z2-9]{10}$/';
+  var JID_LEN = 10;   // 與 js/lib/journal.js 的預設 jid 長度一致(config.js JOURNAL_RULES.jidLen 改了這裡也要改)
+  var IDX_RE = '/^[A-HJ-NP-Z2-9]{' + JID_LEN + '}$/';
   var SLOT = {
     n: '/^n(0[1-9]|[1-4][0-9]|50)$/', l: '/^l(0[1-9]|[12][0-9]|30)$/', e: '/^e(00[1-9]|0[1-9][0-9])$/',
     b: '/^b(0[1-9]|[1-5][0-9]|60)$/', p: '/^p(0[1-9]|[1-7][0-9]|80)$/', s: '/^s(00[1-9]|0[1-9][0-9]|1[0-9][0-9]|200)$/', k: '/^e\\d{3}_b\\d{2}$/',
@@ -147,7 +148,7 @@
           $jid: {
             '.read': PUB + ' || (' + A + ' && ' + MEM + ')',
             '.write': A + ' && ' + OWN + ' && !newData.exists()',
-            about: obj({ '.write': A + ' && ' + EDIT, text: str(0, 2000), leader: str(0, 30), phone: str(0, 30), updatedAt: num, updatedBy: str(1, 128) }, ['text']),
+            about: obj({ '.write': A + ' && ' + EDIT, text: str(0, 2000), leader: str(0, 30), leaderUid: str(0, 128), phone: str(0, 30), updatedAt: num, updatedBy: str(1, 128) }, ['text']),
             notices: { $n: obj({ '.write': A + ' && ' + EDIT, '.validate': slotKey(SLOT.n, '$n') + " && newData.hasChildren(['title','body','order','at','by'])", title: str(1, 60), body: str(0, 2000), pinned: bool, order: num, at: num, by: str(1, 128), updatedAt: num }) },
             links: { $l: obj({ '.write': A + ' && ' + EDIT, '.validate': slotKey(SLOT.l, '$l') + " && newData.hasChildren(['title','url','order'])", title: str(1, 60), url: https, order: num }) },
             events: {
@@ -191,11 +192,11 @@
 
   var NOTE = [
     '貼進「你自己的」Firebase 專案 → Realtime Database → 規則。不要用別人的專案。本檔由 tools/rules_src.js 產生(來源 js/lib/rules_tj.js),請改來源再重新產生,不要手改。',
-    '【狀態】這份規則尚未在任何真實 Firebase 上測試過(開發時沒有資料庫網址)。貼上後請跑 node tools/test_rules_rest.js <資料庫網址> <API金鑰>,全過才發版。',
+    '【狀態】v11:宗旨(j/<jid>/about)新增 leaderUid 欄位(領隊=成員代號);其餘與 v10 相同,v10 規則已在真實 Firebase 驗證過。貼上後請跑 node tools/test_rules_rest.js <資料庫網址> <API金鑰>(資料庫網址與 API 金鑰在 js/config.js),全過才發版。',
     '【不含 pt/rooms】舊的 v3 開團房規則已移除(H-11)。要回復需把舊規則段貼回。',
     '【只靠客戶端、規則做不到】私密密碼每帳號每小時 5 次但可多註冊帳號猜;每人建立日誌數與成員人數上限;兩位編輯同時改同一區塊後寫覆蓋;整本刪除多路徑中途失敗會留殘留(重按刪除即可)。',
     '【白話提醒】開放註冊:任何拿到網址的人都能註冊並看到「所有日誌」的標題;公開日誌連結外流時,不用註冊就能看宗旨、公告、行程。不想這樣就設私密。',
     '【需實測】多路徑 PATCH 時 root 是否為寫入前狀態;.validate 是否於祖先節點評估;server timestamp 與 === now;401 錯誤內容可否分辨過期與 Permission denied。',
   ];
-  return { build: build, NOTE: NOTE, macros: { A: A, MEM: MEM, OWN: OWN, EDIT: EDIT, PUB: PUB, BAN: BAN, MOPEN: MOPEN, MGR: MGR, HTTPS: HTTPS } };
+  return { build: build, NOTE: NOTE, JID_LEN: JID_LEN, macros: { A: A, MEM: MEM, OWN: OWN, EDIT: EDIT, PUB: PUB, BAN: BAN, MOPEN: MOPEN, MGR: MGR, HTTPS: HTTPS } };
 });

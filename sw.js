@@ -1,4 +1,4 @@
-const VERSION = 'v10';
+const VERSION = 'v11';
 const CACHE = 'phototool-' + VERSION;
 const PRECACHE = [
   './',
@@ -25,6 +25,7 @@ const PRECACHE = [
   './js/cloud.js',
   './js/auth.js',
   './js/journalnet.js',
+  './js/busy.js',
   './js/tjctx.js',
   './js/ui_login.js',
   './js/ui_jhome.js',

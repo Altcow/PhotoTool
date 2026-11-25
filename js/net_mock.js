@@ -54,7 +54,7 @@ export function createMockStore({ storage = null, channel = null, rules = null, 
     if (!listeners.has(l)) return;
     let db = load(), uid = null;
     try { uid = await uidNow(); } catch (e) { listeners.delete(l); if (l.onError) l.onError(e); return; }
-    if (!readOk(db, uid, l.path)) { listeners.delete(l); if (l.onError) l.onError(new NetError('PERMISSION', '資料庫取消了訂閱(權限規則)')); return; }
+    if (!readOk(db, uid, l.path)) { listeners.delete(l); if (l.onError) l.onError(new NetError('PERMISSION', '這本日誌不再開放給你看')); return; }
     db = load();
     const cur = at(db, l.path);
     const s = JSON.stringify(cur === undefined ? null : cur);
@@ -70,8 +70,9 @@ export function createMockStore({ storage = null, channel = null, rules = null, 
     if (s === null) delete cur[ps[ps.length - 1]]; else cur[ps[ps.length - 1]] = s;
   };
   // writes: [[path, value]];全部先驗證再一起寫入(多路徑要嘛全成功要嘛全失敗)
-  const commit = async writes => {
+  const commit = async (writes, ifNewPath) => {
     const uid = await uidNow();
+    if (ifNewPath) { const cur = at(load(), ifNewPath); if (cur !== undefined && cur !== null) throw new NetError('EXISTS', '這個位置已經有內容了'); }   // 檢查與寫入之間沒有 await,等同伺服器的原子條件寫入
     const t = now();
     const ws = writes.map(([p, v]) => [p, resolveSv(v, t)]);
     const pre = load();
@@ -80,7 +81,7 @@ export function createMockStore({ storage = null, channel = null, rules = null, 
     const postS = strip(post) || {};
     if (rules) {
       const r = rules.checkWrite(pre, postS, uid, ws.map(w => w[0]), t);
-      if (!r.ok) throw new NetError('PERMISSION', '資料庫拒絕這個操作(權限規則):' + r.reason);
+      if (!r.ok) throw new NetError('PERMISSION', '你沒有權限做這件事:' + r.reason);
     }
     save(postS);
     changed();
@@ -89,10 +90,12 @@ export function createMockStore({ storage = null, channel = null, rules = null, 
     kind: 'mock',
     async get(path) {
       const db = load();
-      if (rules && !readOk(db, await uidNow(), path)) throw new NetError('PERMISSION', '資料庫拒絕這個操作(權限規則)');
+      if (rules && !readOk(db, await uidNow(), path)) throw new NetError('PERMISSION', '你沒有權限做這件事');
       const v = at(db, path); return v === undefined ? null : JSON.parse(JSON.stringify(v));
     },
-    async put(path, value) { await commit([[path, value]]); },
+    async put(path, value, o) {
+      await commit([[path, value]], o && o.ifNew ? path : null);
+    },
     async patch(path, obj) {
       const base = parts(path).join('/');
       await commit(Object.keys(obj || {}).map(k => [(base ? base + '/' : '') + k, obj[k]]));
@@ -105,7 +108,7 @@ export function createMockStore({ storage = null, channel = null, rules = null, 
         if (!listeners.has(l)) return;
         try {
           const uid = await uidNow(), db = load();
-          if (!readOk(db, uid, path)) { listeners.delete(l); if (onError) onError(new NetError('PERMISSION', '資料庫取消了訂閱(權限規則)')); return; }
+          if (!readOk(db, uid, path)) { listeners.delete(l); if (onError) onError(new NetError('PERMISSION', '這本日誌不再開放給你看')); return; }
           const cur = at(db, path); l.last = JSON.stringify(cur === undefined ? null : cur); cb(cur === undefined ? null : JSON.parse(l.last));
         } catch (e) { listeners.delete(l); if (onError) onError(e); }
       });

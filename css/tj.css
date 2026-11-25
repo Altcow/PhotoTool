@@ -60,3 +60,22 @@ a.big-btn { display: flex; align-items: center; justify-content: center; gap: 10
 a.btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font-size: 16px; text-decoration: none; }
 .tj-detail .bar h2 { white-space: normal; font-size: 15px; line-height: 1.2; max-height: 2.4em; overflow: hidden; }
 .tabs { scrollbar-width: none; }
+/* 處理中遮罩 */
+.tj-busy { position: fixed; inset: 0; z-index: 10000; background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; padding: 24px; touch-action: none; }
+.tj-busy-box { width: 100%; max-width: 340px; padding: 22px 18px; border-radius: 16px; background: var(--card); color: var(--fg); text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,.4); }
+.tj-busy-text { font-size: 17px; margin-top: 10px; line-height: 1.5; }
+.tj-busy-btns { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+.tj-spin { width: 44px; height: 44px; margin: 0 auto; border: 5px solid var(--line); border-top-color: var(--primary); border-radius: 50%; animation: tjspin .9s linear infinite; }
+@keyframes tjspin { to { transform: rotate(360deg); } }
+/* 編輯者一眼看得到的「編輯」「更多」 */
+.tj-edit-row { display: flex; gap: 8px; align-items: center; padding: 4px 0 6px; flex-wrap: wrap; }
+.tj-edit-row .btn { min-height: 44px; }
+/* 頭像選擇 */
+.tj-pick { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.tj-pick-item { min-width: 56px; min-height: 56px; padding: 4px; border: 2px solid var(--line); border-radius: 14px; background: var(--card); color: var(--fg); font-size: 26px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.tj-pick-item.on { border-color: var(--primary); background: var(--chip); box-shadow: 0 0 0 2px var(--primary) inset; }
+.tj-pick-item .tj-av { pointer-events: none; }
+.tj-sel { width: 100%; min-height: 44px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--fg); font: inherit; font-size: 16px; }
+.tj-mem-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; border-top: 1px solid var(--line); padding: 6px 0; }
+.tj-mem-row .grow { flex: 1 1 120px; min-width: 0; }
+.tj-pwbox { font-size: 28px; letter-spacing: 6px; font-weight: 800; text-align: center; padding: 8px; }

@@ -7,13 +7,44 @@
   var LIM = { title: 60, name: 30, about: 2000, leader: 30, phone: 30, noticeBody: 2000, blockText: 4000, blockTitle: 60, url: 2000, avatarPhoto: 16000 };
   var SLOTS = { notice: ['n', 50, 2], link: ['l', 30, 2], event: ['e', 99, 3], block: ['b', 60, 2], phrase: ['p', 80, 2] };
 
+  // 可由 config.js 的 JOURNAL_RULES 覆寫(setRules)。注意:jidLen 要和 Firebase 規則的 jid regex 一致(rules_tj.js JID_LEN)。
+  var JID_LEN = 10;
+  var PW_RULE = { min: 4, max: 4, digits: true };
+  function setRules(r) {
+    r = r || {};
+    if (r.jidLen) JID_LEN = r.jidLen;
+    if (r.pwMin) PW_RULE.min = r.pwMin;
+    if (r.pwMax) PW_RULE.max = r.pwMax;
+    if (r.pwDigits !== undefined) PW_RULE.digits = !!r.pwDigits;
+  }
+  function jidPattern() { return '[A-HJ-NP-Z2-9]{' + JID_LEN + '}'; }
   function genJid(rand) {
     rand = rand || Math.random;
     var s = '';
-    for (var i = 0; i < 10; i++) s += CODE_CHARS[Math.floor(rand() * CODE_CHARS.length)];
+    for (var i = 0; i < JID_LEN; i++) s += CODE_CHARS[Math.floor(rand() * CODE_CHARS.length)];
     return s;
   }
-  function isJid(s) { return /^[A-HJ-NP-Z2-9]{10}$/.test(String(s || '')); }
+  function isJid(s) { return new RegExp('^' + jidPattern() + '$').test(String(s || '')); }
+  // 顯示用文字:null/undefined/字串 "null"、"undefined" 一律當空字串(避免畫面出現 null)
+  function txt(v) {
+    if (v === null || v === undefined) return '';
+    var s = String(v);
+    return s === 'null' || s === 'undefined' ? '' : s;
+  }
+  // 私密密碼:回傳錯誤文字或 ''
+  function validPw(pw) {
+    pw = String(pw == null ? '' : pw);
+    if (PW_RULE.digits && !/^\d+$/.test(pw)) return '密碼只能用數字';
+    if (pw.length < PW_RULE.min || pw.length > PW_RULE.max) return PW_RULE.min === PW_RULE.max ? '密碼要 ' + PW_RULE.min + ' ' + (PW_RULE.digits ? '位數字' : '個字') : '密碼要 ' + PW_RULE.min + '~' + PW_RULE.max + ' ' + (PW_RULE.digits ? '位數字' : '個字');
+    return '';
+  }
+  function pwRule() { return { min: PW_RULE.min, max: PW_RULE.max, digits: PW_RULE.digits }; }
+  // 密碼雜湊的輸入字串(再做 SHA-256 → jkeys 的 key);掺入 jid 讓同密碼在不同日誌的 key 不同
+  function pwHashInput(jid, pw) { return 'tj:' + jid + ':' + pw; }
+  // 剩餘嘗試次數:try = {n, ts};一小時後重設
+  var TRY_MAX = 5, TRY_WINDOW = 3600000;
+  function triesLeft(t, now) { if (!t || !(Number(t.ts) + TRY_WINDOW > now)) return TRY_MAX; return Math.max(0, TRY_MAX - (Number(t.n) || 0)); }
+  function nextTryN(t, now) { return !t || !(Number(t.ts) + TRY_WINDOW > now) ? 1 : (Number(t.n) || 0) + 1; }
 
   function pad(n, w) { var s = String(n); while (s.length < w) s = '0' + s; return s; }
   // 格子 id:kind = notice|link|event|block|phrase;回傳最小的未用格子,滿了回傳 null
@@ -184,7 +215,7 @@
   function inviteUrl(base, jid, code) { return base + '?j=' + jid + '#' + code; }
   // 解析:search 的 j、hash 的代碼(# 後純 32 字元十六進位);回傳 {jid, code} 或 null
   function parseInvite(search, hash) {
-    var m = /(?:^|[?&])j=([A-HJ-NP-Z2-9]{10})(?:&|$)/.exec(String(search || ''));
+    var m = new RegExp('(?:^|[?&])j=(' + jidPattern() + ')(?:&|$)').exec(String(search || ''));
     if (!m) return null;
     var h = String(hash || '').replace(/^#/, '');
     return { jid: m[1], code: isInviteCode(h) ? h : '' };
@@ -196,6 +227,14 @@
     return { gear: role === 'owner' || role === 'editor', invite: role === 'owner' || role === 'editor', members: role === 'owner' || role === 'editor', manage: role === 'owner' };
   }
 
+  // 領隊下拉選項:成員(主編第一)+「其他(自行輸入)」;members = {uid:{name,role,joinedAt}}
+  function leaderOptions(members, ownerUid) {
+    var list = Object.keys(members || {}).map(function (u) { return { uid: u, name: txt(members[u].name) || '(未命名)', role: members[u].role, joinedAt: Number(members[u].joinedAt) || 0 }; });
+    var rank = { owner: 0, editor: 1, member: 2 };
+    list.sort(function (a, b) { return (a.uid === ownerUid ? -1 : b.uid === ownerUid ? 1 : 0) || ((rank[a.role] || 3) - (rank[b.role] || 3)) || (a.joinedAt - b.joinedAt); });
+    return list.map(function (m) { return { uid: m.uid, name: m.name }; });
+  }
+
   return {
     CODE_CHARS: CODE_CHARS, LIM: LIM, TABS: TABS, INVITE_TTL: INVITE_TTL, genJid: genJid, isJid: isJid, allocSlot: allocSlot, isSlot: isSlot, slotMax: slotMax,
     nextOrder: nextOrder, sortedList: sortedList, swapOrder: swapOrder, isDate: isDate, md: md, fmtRange: fmtRange, dayCount: dayCount, dayTitle: dayTitle, addDays: addDays,
@@ -203,5 +242,7 @@
     checkLen: checkLen, validateJournalForm: validateJournalForm, hasPhone: hasPhone, validName: validName, truncName: truncName, initialOf: initialOf,
     colorOf: colorOf, validAvatar: validAvatar, squareCrop: squareCrop, maskEmail: maskEmail,
     genInviteCode: genInviteCode, isInviteCode: isInviteCode, inviteUrl: inviteUrl, parseInvite: parseInvite, inviteValid: inviteValid, settingsAccess: settingsAccess,
+    setRules: setRules, jidPattern: jidPattern, txt: txt, validPw: validPw, pwRule: pwRule, pwHashInput: pwHashInput, triesLeft: triesLeft, nextTryN: nextTryN, TRY_MAX: TRY_MAX,
+    leaderOptions: leaderOptions,
   };
 });

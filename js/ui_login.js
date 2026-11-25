@@ -1,6 +1,7 @@
-// 登入頁:登入 / 註冊 / 忘記密碼;尚未設定資料庫與金鑰時顯示白話提示,可改用模擬模式預覽。
-import { el, getSettings, saveSettings, openSettings } from './app.js';
+// 登入頁:登入 / 註冊 / 忘記密碼;服務無法使用時只顯示白話提示。
+import { el, getSettings, saveSettings } from './app.js';
 import * as Auth from './auth.js';
+import * as busyUi from './busy.js';
 
 const LAST_EMAIL = 'tj_last_email';
 const lastEmail = () => { try { return localStorage.getItem(LAST_EMAIL) || ''; } catch (_) { return ''; } };
@@ -26,41 +27,32 @@ export function showLogin(root, opts) {
       const email = vals.email.trim();
       if (!A.validEmail(email)) { msg = '!請輸入正確的 email'; draw(); return; }
       if (view !== 'forgot' && !A.validPassword(vals.pw)) { msg = '!密碼至少 6 個字'; draw(); return; }
-      try {
-        if (view === 'register') {
-          const v = window.Journal.validName(vals.name);
-          if (!v.ok) { msg = '!' + v.msg; draw(); return; }
-          setBusy(true, label);
-          const session = await Auth.register(email, vals.pw);
-          try { localStorage.setItem(LAST_EMAIL, email); } catch (_) { /* 略過 */ }
-          opts.onDone({ session, name: v.value });
-        } else if (view === 'login') {
-          setBusy(true, label);
-          const session = await Auth.login(email, vals.pw);
-          try { localStorage.setItem(LAST_EMAIL, email); } catch (_) { /* 略過 */ }
-          opts.onDone({ session });
-        } else {
-          setBusy(true, label);
-          await Auth.sendReset(email);
-          msg = '若這個 email 有註冊,重設信已寄出,請看信箱(含垃圾郵件)'; busy = false; draw();
-        }
-      } catch (e) { fail(e); }
+      if (view === 'register') {
+        const v = window.Journal.validName(vals.name);
+        if (!v.ok) { msg = '!' + v.msg; draw(); return; }
+        const r = await busyUi.run(() => Auth.register(email, vals.pw), { text: '註冊中…' });
+        if (!r.ok) return fail(r.error);
+        try { localStorage.setItem(LAST_EMAIL, email); } catch (_) { /* 略過 */ }
+        opts.onDone({ session: r.value, name: v.value });
+      } else if (view === 'login') {
+        const r = await busyUi.run(() => Auth.login(email, vals.pw), { text: '登入中…' });
+        if (!r.ok) return fail(r.error);
+        try { localStorage.setItem(LAST_EMAIL, email); } catch (_) { /* 略過 */ }
+        opts.onDone({ session: r.value });
+      } else {
+        const r = await busyUi.run(() => Auth.sendReset(email), { text: '寄送中…' });
+        if (!r.ok) return fail(r.error);
+        msg = '若這個 email 有註冊,重設信已寄出,請看信箱(含垃圾郵件)'; busy = false; draw();
+      }
     };
-    const googleBtn = (mode === 'mock' || (mode === 'firebase' && Auth.googleClientId())) && view === 'login'
+    const googleBtn = Auth.googleAvailable() && view === 'login'
       ? el('button', { class: 'big-btn', id: 'tjGoogle', onclick: async () => {
         if (busy) return;
         try { busy = true; const g = await Auth.getGoogleIdToken(); const session = await Auth.loginWithGoogle(g); opts.onDone({ session, google: true }); }
         catch (e) { if (e && e.message === '已取消') { busy = false; return; } fail(e); }
       } }, 'Google 登入(已綁定的帳號)') : null;
 
-    const setup = mode === 'none' ? el('div', { class: 'card', id: 'tjSetup' },
-      el('b', {}, '還沒有設定資料庫'),
-      el('p', { class: 'muted' }, '旅遊日誌需要你自己的 Firebase 資料庫與 API 金鑰才能多人使用(步驟見「Firebase設定步驟.md」)。App 不內建任何金鑰。'),
-      el('div', { class: 'row wrap' },
-        el('button', { class: 'btn primary', id: 'tjMockOn', onclick: () => { saveSettings(Object.assign({}, getSettings(), { useMock: true })); Auth.resetBackend(); draw(); } }, '先用模擬模式看畫面'),
-        el('button', { class: 'btn', id: 'tjOpenSettings', onclick: () => openSettings() }, '去設定'),
-        el('button', { class: 'btn', id: 'tjRecheck', onclick: () => { Auth.resetBackend(); draw(); } }, '設定好了,重新檢查')),
-      el('p', { class: 'muted small' }, '模擬模式的資料只存在這支手機的這個瀏覽器,不會上傳,用來預覽畫面與操作。')) : null;
+    const setup = mode === 'none' ? el('div', { class: 'banner warn', id: 'tjSetup' }, '服務暫時無法使用,請稍後再試。') : null;
     const mockNote = mode === 'mock' ? el('div', { class: 'banner warn', id: 'tjMockNote' }, '目前是模擬模式(資料只存在這支手機,不會上傳)。',
       el('button', { class: 'btn sm', id: 'tjMockOff', style: 'margin-left:8px', onclick: () => { saveSettings(Object.assign({}, getSettings(), { useMock: false })); Auth.resetBackend(); draw(); } }, '關閉')) : null;
 

@@ -5,7 +5,7 @@ export const ctx = { jn: null, uid: '', name: '', email: '', avatar: null, googl
 
 export const setHash = h => { if (location.hash === h) window.dispatchEvent(new HashChangeEvent('hashchange')); else location.hash = h; };
 export function parseRoute(hash) {
-  const m = /^#\/j\/([A-HJ-NP-Z2-9]{10})(?:\/e\/(e\d{3}))?$/.exec(String(hash || ''));
+  const m = new RegExp('^#/j/(' + window.Journal.jidPattern() + ')(?:/e/(e\\d{3}))?$').exec(String(hash || ''));
   return m ? { jid: m[1], eid: m[2] || '' } : { jid: '', eid: '' };
 }
 

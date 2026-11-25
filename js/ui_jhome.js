@@ -1,11 +1,13 @@
 // 旅遊日誌外殼:登入分流、首頁(左側清單+4 個 tab+圓形創建鈕)、路由(hash)、直橫式版面。
-import { el, toast, pushScreen, popScreen, getSettings } from './app.js';
+import { el, toast, pushScreen, popScreen, getSettings, saveSettings } from './app.js';
+import { JOURNAL_RULES } from './config.js';
 import * as DB from './db.js';
 import * as Auth from './auth.js';
 import { makeJournalNet } from './journalnet.js';
 import { showLogin } from './ui_login.js';
 import { openAccount } from './ui_account.js';
 import { mountDetail } from './ui_journal.js';
+import * as busy from './busy.js';
 import { ctx, accountChip, parseRoute, setHash, redrawChips } from './tjctx.js';
 
 let mainEl = null;
@@ -21,6 +23,11 @@ const EMPTY = {
 export async function startJournalApp(main) {
   mainEl = main;
   mainEl.style.background = 'var(--bg)';
+  window.Journal.setRules(JOURNAL_RULES);
+  try {   // 開發用:?mock=1 / ?mock=0 切換模擬模式(畫面上沒有任何入口)
+    const mq = new URLSearchParams(location.search).get('mock');
+    if (mq !== null) { saveSettings(Object.assign({}, getSettings(), { useMock: mq === '1' })); Auth.resetBackend(); }
+  } catch (_) { /* 略過 */ }
   const inv = window.Journal.parseInvite(location.search, location.hash);
   if (inv) {
     try { sessionStorage.setItem('tj_pending_j', inv.jid); } catch (_) { /* 略過 */ }
@@ -58,7 +65,15 @@ function teardown() {
   if (mainEl) mainEl.replaceChildren();
 }
 
-const wide = () => window.matchMedia('(orientation: landscape), (min-width: 768px)').matches;
+// 橫式判斷:用「裝置」方向,不用視窗長寬比 — iPhone 彈出鍵盤時視窗高度會小於寬度,
+// 用 CSS orientation 會誤判成橫式而重掛版面、蓋掉正在編輯的表單。
+const isLandscape = () => {
+  if (typeof window.orientation === 'number') return Math.abs(window.orientation) === 90;
+  if (window.screen && screen.orientation && screen.orientation.type) return /landscape/.test(screen.orientation.type);
+  return window.matchMedia('(orientation: landscape)').matches;
+};
+const wide = () => window.innerWidth >= 768 || (isLandscape() && window.innerWidth >= 500);
+const typing = () => { const a = document.activeElement; return !!a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && !a.readOnly; };
 
 function mountShell() {
   teardown();
@@ -104,10 +119,11 @@ function mountShell() {
     if (!route.jid) { right.style.visibility = ''; return; }
     const back = route.eid ? () => setHash('#/j/' + route.jid) : (isWide ? null : () => setHash('#/'));
     s.detail = mountDetail(route, { inline: isWide, onBack: back, openAccount });
-    document.getElementById('screens').append(s.detail.el);
+    const scr = document.getElementById('screens');
+    scr.insertBefore(s.detail.el, scr.firstChild);   // 放最底層,不會蓋在已開啟的表單上
   };
-  window.onhashchange = render;
-  const onResize = () => render();
+  window.onhashchange = () => { if (!busy.isBusy()) render(); };   // 處理中不換頁(busy.js 另外把網址改回去)
+  const onResize = () => { if (typing() || busy.isBusy()) return; render(); };   // 打字中(鍵盤開關造成的 resize)不重算版面
   window.addEventListener('resize', onResize); s.cleanup.push(() => window.removeEventListener('resize', onResize));
   window.addEventListener('orientationchange', onResize); s.cleanup.push(() => window.removeEventListener('orientationchange', onResize));
   s.cleanup.push(() => document.body.classList.remove('tj-wide'));
@@ -118,29 +134,45 @@ function mountShell() {
 
 function openCreate() {
   pushScreen('創建日誌', (body) => {
-    const J = window.Journal;
-    const title = el('input', { type: 'text', id: 'cjTitle', maxlength: 60, placeholder: '例如:沖繩 7 天遊' });
+    const J = window.Journal, rule = J.pwRule();
+    const ruleText = (rule.min === rule.max ? rule.min : rule.min + '~' + rule.max) + (rule.digits ? ' 位數字' : ' 個字');
+    const title = el('input', { type: 'text', id: 'cjTitle', maxlength: 60, placeholder: '例如:沖繩 7 天遊', autocomplete: 'off' });
     const start = el('input', { type: 'date', id: 'cjStart' }), end = el('input', { type: 'date', id: 'cjEnd' });
+    const pw = el('input', { type: 'text', id: 'cjPw', maxlength: rule.max, inputmode: rule.digits ? 'numeric' : 'text', autocomplete: 'off', placeholder: '團密碼(' + ruleText + ')' });
+    const listed = el('input', { type: 'checkbox', id: 'cjListed', checked: true, style: 'width:22px;height:22px' });
     const err = el('div', { class: 'banner warn', id: 'cjErr', style: 'display:none' });
+    let vis = 'public';
+    const slot = {};   // 逾時重試沿用同一個日誌代碼,不會建出兩本
+    const pubBtn = el('button', { class: 'big-btn primary', id: 'cjPublic', 'aria-pressed': 'true', onclick: () => setVis('public') }, '🌐 公開(登入者都能加入)');
+    const privBtn = el('button', { class: 'big-btn', id: 'cjPrivate', 'aria-pressed': 'false', onclick: () => setVis('private') }, '🔒 私密(要團密碼才能加入)');
+    const privBox = el('div', { id: 'cjPrivBox', style: 'display:none' },
+      el('label', { class: 'f', for: 'cjPw' }, '團密碼(' + ruleText + ')'), pw,
+      el('div', { class: 'muted small' }, '把密碼另外告訴要加入的人。創建後可以在日誌右上 ⚙ 修改。'),
+      el('label', { class: 'row', style: 'margin:12px 0' }, listed, '列在「所有日誌」(別人看得到標題,但要密碼才進得來)'));
+    function setVis(v) {
+      vis = v;
+      pubBtn.classList.toggle('primary', v === 'public'); privBtn.classList.toggle('primary', v === 'private');
+      pubBtn.setAttribute('aria-pressed', v === 'public' ? 'true' : 'false'); privBtn.setAttribute('aria-pressed', v === 'private' ? 'true' : 'false');
+      privBox.style.display = v === 'private' ? '' : 'none';
+    }
+    [title, pw].forEach(i => { i.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); i.blur(); } }; });
     const ok = el('button', { class: 'big-btn primary', id: 'cjOk', style: 'margin-top:14px' }, '創建');
     ok.onclick = async () => {
-      const f = { title: title.value, start: start.value, end: end.value, vis: 'public', tz: (Intl.DateTimeFormat().resolvedOptions().timeZone || '') };
-      const e = J.validateJournalForm(f);
+      if (ok.disabled) return;
+      const f = { title: title.value, start: start.value, end: end.value, vis, tz: (Intl.DateTimeFormat().resolvedOptions().timeZone || ''), pw: pw.value.trim(), listed: vis === 'private' ? listed.checked : true };
+      let e = J.validateJournalForm(f);
+      if (!e && vis === 'private') e = J.validPw(f.pw);
       if (e) { err.textContent = e; err.style.display = ''; return; }
-      ok.disabled = true; ok.textContent = '建立中…';
-      try {
-        const { jid } = await ctx.jn.createJournal(f);
-        popScreen(); setHash('#/j/' + jid);
-        toast('先寫宗旨與公告,再按右上 ⚙ 邀請大家', 3500);
-      } catch (x) { err.textContent = x.message || '建立失敗'; err.style.display = ''; ok.disabled = false; ok.textContent = '創建'; }
+      err.style.display = 'none'; ok.disabled = true;
+      const r = await busy.run(() => ctx.jn.createJournal(f, slot), { text: '建立中…' });
+      if (r.ok) { popScreen(); setHash('#/j/' + r.value.jid); toast('先寫宗旨與公告,再按右上 ⚙ 邀請大家', 3500); return; }
+      err.textContent = (r.error && r.error.message) || '建立失敗'; err.style.display = ''; ok.disabled = false;
     };
     body.append(err,
       el('label', { class: 'f', for: 'cjTitle' }, '標題(必填)'), title,
       el('div', { class: 'two-col' }, el('div', {}, el('label', { class: 'f', for: 'cjStart' }, '出發日(選填)'), start), el('div', {}, el('label', { class: 'f', for: 'cjEnd' }, '回程日(選填)'), end)),
       el('div', { class: 'f' }, '公開或私密'),
-      el('div', { class: 'big-grid' },
-        el('button', { class: 'big-btn primary', id: 'cjPublic', 'aria-pressed': 'true' }, '🌐 公開(登入者都能加入)'),
-        el('button', { class: 'big-btn', id: 'cjPrivate', disabled: true }, '🔒 私密(需密碼,下一版開放)')),
-      ok);
+      el('div', { class: 'big-grid' }, pubBtn, privBtn),
+      privBox, ok);
   });
 }

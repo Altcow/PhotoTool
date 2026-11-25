@@ -24,7 +24,7 @@
     INVALID_IDP_RESPONSE: 'Google 登入沒有成功,請再試一次',
     CREDENTIAL_ALREADY_IN_USE: '這個 Google 帳號已綁定在別的帳號',
     FEDERATED_USER_ID_ALREADY_LINKED: '這個 Google 帳號已綁定在別的帳號',
-    API_KEY_INVALID: 'API 金鑰不對,請到設定頁檢查',
+    API_KEY_INVALID: '服務暫時無法使用,請稍後再試',
     NETWORK: '沒有網路',
   };
   // 這些錯誤代表登入已無法續用(要回登入頁)

@@ -104,6 +104,7 @@ function pushScreen(title, build, onClose, helpKey) {
   return entry;
 }
 function popScreen() {
+  if (globalThis.__tjBusy && globalThis.__tjBusy()) return;   // 處理中不能返回
   const cur = stack[stack.length - 1];
   if (cur && cur.beforeClose && cur.beforeClose() === false) return;   // 例如匯出預覽尚未下載時要先確認
   const t = stack.pop();
@@ -1370,9 +1371,6 @@ async function renderSettingsTab(root, entry) {
   const cmodel = el('input', { type: 'text', id: 'setCModel', value: s.classifyModel });
   const me = el('input', { type: 'text', id: 'setMe', value: s.myName });
   const acct = el('input', { type: 'text', id: 'setAccount', value: s.myAccount || '', placeholder: '(選填)純本機顯示,App 沒有登入系統' });
-  const dbUrl = el('input', { type: 'url', id: 'setDb', value: s.dbUrl || '', placeholder: 'https://你的專案-default-rtdb.firebaseio.com' });
-  const fbKey = el('input', { type: 'text', id: 'setFbKey', value: s.fbApiKey || '', placeholder: 'AIza…', autocomplete: 'off' });
-  const gcid = el('input', { type: 'text', id: 'setGcid', value: s.googleClientId || '', placeholder: '123456789-xxxx.apps.googleusercontent.com', autocomplete: 'off' });
   const mockCb = el('input', { type: 'checkbox', id: 'setMock', checked: !!s.useMock, style: 'width:22px;height:22px' });
   const cats = el('textarea', { id: 'setCats', rows: 3 }, s.categories.join('、'));
   cats.value = s.categories.join('、');
@@ -1393,30 +1391,25 @@ async function renderSettingsTab(root, entry) {
     ...(featureOn('camera') ? [el('label', { class: 'row', style: 'margin:12px 0 0' }, locOn, '拍照時記錄位置(被拒絕會自動略過)'),
       el('label', { class: 'row', style: 'margin:12px 0 0' }, keepCb, '📎 保留照片(預設關:照片只用來對照,儲存時不寫入;每一筆儲存時可個別開啟)')] : []),
     el('div', { class: 'muted small', id: 'persistInfo' }, '持久儲存:' + persisted),
-    ...f('Google 用戶端 ID(選填,綁定 Google 用)', gcid, '公開識別碼不是密碼;步驟見「Firebase設定步驟.md」第八節。'),
-    ...f('Firebase 網頁 API 金鑰(AIza…)', fbKey, '官方說明這不是秘密,但請只填你自己專案的。App 不內建任何金鑰。'),
-    ...f('資料庫網址(Firebase Realtime Database)', dbUrl, '開團需要。填你自己的 Firebase 專案網址,步驟見「Firebase設定步驟.md」。App 不內建網址。連結取得者可在結單前新增/修改訂單;發起人身分僅由 App 判斷,不要把點餐連結公開張貼到不信任的場合。'),
     el('details', { class: 'adv', id: 'advBox' }, el('summary', {}, '進階'), el('label', { class: 'row', style: 'margin:8px 0 0' }, mockCb, '測試模式(假連線,只有同一個瀏覽器的分頁互通,不經網路;一般使用請勿開啟)')),
-    el('div', { class: 'row-btns' },
+    ...(featureOn('export') ? [el('div', { class: 'row-btns' },
       el('button', { class: 'btn', id: 'btnExportAll', onclick: () => exportData(false) }, '匯出全部檔案'),
       el('button', { class: 'btn', id: 'btnExportAllPhotos', onclick: () => exportData(true) }, '匯出全部(含照片)'),
-      el('label', { class: 'btn' }, '匯入', el('input', { type: 'file', accept: 'application/json,.json', class: 'hidden', id: 'importFile2', onchange: importData }))),
+      el('label', { class: 'btn' }, '匯入', el('input', { type: 'file', accept: 'application/json,.json', class: 'hidden', id: 'importFile2', onchange: importData })))] : []),
     ...(featureOn('ledger') ? [...f('我的帳號 ID/暱稱', acct, '只存在這支手機、只用來顯示;不會上傳,也沒有登入。'),
       ...f('我的名稱', me, '新記帳的付款人預設值;報表的「我/家人」也依此判斷。'),
       ...f('分類(用「、」或逗號分隔)', cats)] : []),
   );
   root.append(mainCard);
   const saveForm = async () => {
-      const dbv = dbUrl.value.trim();
-      if (dbv && !validDbUrl(dbv)) { alert('資料庫網址格式不對(需為 https://…firebaseio.com 或 …firebasedatabase.app)'); return false; }
       const cl = cats.value.split(/[、,，\n]/).map(x => x.trim()).filter(Boolean);
-      saveSettings(Object.assign({}, getSettings(), { aiEnabled: (hasAiKey(s) !== hasAiKey({ apiKey: api.value, proxyUrl: proxy.value }) || aiCb.checked === hasAiKey({ apiKey: api.value, proxyUrl: proxy.value })) ? undefined : aiCb.checked, apiKey: api.value.trim(), proxyUrl: proxy.value.trim(), model: model.value.trim() || 'claude-sonnet-5-5', classifyModel: cmodel.value.trim() || 'claude-haiku-5-5', locationEnabled: locOn.checked, keepPhotos: keepCb.checked, myAccount: acct.value.trim(), dbUrl: dbv, fbApiKey: fbKey.value.trim(), googleClientId: gcid.value.trim(), useMock: mockCb.checked, myName: me.value.trim() || '我', categories: cl.length ? cl : DEFAULT_CATS.slice() }));
+      saveSettings(Object.assign({}, getSettings(), { aiEnabled: (hasAiKey(s) !== hasAiKey({ apiKey: api.value, proxyUrl: proxy.value }) || aiCb.checked === hasAiKey({ apiKey: api.value, proxyUrl: proxy.value })) ? undefined : aiCb.checked, apiKey: api.value.trim(), proxyUrl: proxy.value.trim(), model: model.value.trim() || 'claude-sonnet-5-5', classifyModel: cmodel.value.trim() || 'claude-haiku-5-5', locationEnabled: locOn.checked, keepPhotos: keepCb.checked, myAccount: acct.value.trim(), useMock: mockCb.checked, myName: me.value.trim() || '我', categories: cl.length ? cl : DEFAULT_CATS.slice() }));
         return { where: '設定' };
   };
   const sbS = attachSaveBar(entry, { id: 'btnSaveSettings', onSave: saveForm });
   sbS.trackInputs(mainCard);
   if (featureOn('cloud')) root.append(CloudUI.mediaCard());
-  root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '旅遊日誌 v10'));
+  root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '旅遊日誌 v11'));
 }
 
 /* ---------- 啟動 ---------- */

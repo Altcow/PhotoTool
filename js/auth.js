@@ -1,5 +1,5 @@
 // 旅遊日誌的登入狀態:選後端(Firebase / 模擬 / 未設定)、保存登入(localStorage['tj_auth'])、自動登入、登出、Google 綁定。
-// 依賴全域 AuthRest、Policy、RulesTj(js/lib)。不內建任何金鑰:API 金鑰與資料庫網址來自 config.js 或設定頁。
+// 依賴全域 AuthRest、Policy、RulesTj(js/lib)。連線資訊只來自 config.js。
 import { NetError, validDbUrl } from './net.js';
 import { createMockStore, createMockAuthFetch } from './net_mock.js';
 import { createFirebaseStore } from './net_firebase.js';
@@ -9,9 +9,12 @@ const AUTH_KEY = 'tj_auth';
 const readSettings = () => { try { return JSON.parse(localStorage.getItem('pt_settings') || '{}'); } catch (_) { return {}; } };
 const hash = s => { let h = 5381; s = String(s); for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0; return h.toString(36); };
 
-export const dbUrl = () => (readSettings().dbUrl || '').trim() || FIREBASE_DB_URL;
-export const apiKey = () => (readSettings().fbApiKey || '').trim() || FIREBASE_API_KEY;
-export const googleClientId = () => (readSettings().googleClientId || '').trim() || GOOGLE_CLIENT_ID;
+// 連線資訊只來自 config.js(由開發端綁好,使用者不需知道,也沒有設定畫面)
+export const dbUrl = () => FIREBASE_DB_URL;
+export const apiKey = () => FIREBASE_API_KEY;
+export const googleClientId = () => GOOGLE_CLIENT_ID;
+// 沒有 Google 用戶端 ID 時,畫面上不顯示任何 Google 登入/綁定按鈕(模擬模式例外,方便預覽)
+export const googleAvailable = () => mode() === 'mock' || !!googleClientId();
 export function mode() {
   if (readSettings().useMock) return 'mock';
   return validDbUrl(dbUrl()) && apiKey() ? 'firebase' : 'none';
@@ -61,7 +64,7 @@ export const resetBackend = () => { cache = null; };
 
 function need() {
   const b = getBackend();
-  if (b.mode === 'none') throw new NetError('NO_BACKEND', '尚未設定資料庫與 API 金鑰');
+  if (b.mode === 'none') throw new NetError('NO_BACKEND', '服務暫時無法使用,請稍後再試');
   return b;
 }
 const keep = s => { writeSession(s); emit(); return s; };
@@ -117,7 +120,7 @@ export async function getGoogleIdToken() {
     return 'g:' + e.trim();
   }
   const cid = googleClientId();
-  if (!cid) throw new Error('尚未設定 Google 用戶端 ID(設定頁)');
+  if (!cid) throw new Error('暫時無法使用 Google 登入');
   await loadGsi();
   return new Promise((resolve, reject) => {
     window.google.accounts.id.initialize({ client_id: cid, callback: r => (r && r.credential ? resolve(r.credential) : reject(new Error('Google 登入沒有成功,請再試一次'))), cancel_on_tap_outside: true });
