@@ -223,11 +223,22 @@ export function mountDetail(route, o) {
       const n = (count || 0) + 1;
       title = L.dayTitle(n); if (meta.start && n <= (L.dayCount(meta.start, meta.end) || 99)) date = L.addDays(meta.start, n - 1);
     }
+    // 編輯與新增都給完整欄位(標題、日期、時間、內容);新增後直接進事件頁,可再加照片與選單
+    const full = e ? ((state.j.events || {})[e.id] || e) : {};
     openForm({
       title: e ? '編輯事件' : '新增事件',
       guard: e ? { cur: stamp(() => ((state.j.events || {})[e.id] || {}).updatedAt), base: ((state.j.events || {})[e.id] || {}).updatedAt || 0 } : null,
-      fields: [{ key: 'title', label: '事件標題', value: title, max: 60, required: true }, { key: 'date', label: '日期(選填)', type: 'date', value: date }],
-      onSave: (v, slot) => (e ? ctx.jn.updateEvent(jid, e.id, v) : (slot.cur = slot.cur || state.j.events || {}, ctx.jn.addEvent(jid, v, slot))),
+      fields: [{ key: 'title', label: '事件標題', value: title, max: 60, required: true }, { key: 'date', label: '日期(選填)', type: 'date', value: date },
+        { key: 'time', label: '開始時間(選填)', type: 'time', value: T(full.time) }, { key: 'endTime', label: '結束時間(選填)', type: 'time', value: T(full.endTime) },
+        { key: 'desc', label: '內容', type: 'textarea', rows: 6, value: T(full.desc), max: L.LIM.desc, hint: '照片、選單、導覽、附件在儲存後的事件頁裡新增。' }],
+      onSave: async (v, slot) => {
+        if (e) return ctx.jn.updateEvent(jid, e.id, v);
+        slot.cur = slot.cur || state.j.events || {};
+        const id = await ctx.jn.addEvent(jid, { title: v.title, date: v.date }, slot);
+        if (v.time || v.endTime || v.desc) await ctx.jn.updateEvent(jid, id, v);
+        setTimeout(() => setHash('#/j/' + jid + '/e/' + id), 0);
+        return id;
+      },
     });
   };
   sub();

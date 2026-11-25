@@ -1409,7 +1409,7 @@ async function renderSettingsTab(root, entry) {
   const sbS = attachSaveBar(entry, { id: 'btnSaveSettings', onSave: saveForm });
   sbS.trackInputs(mainCard);
   if (featureOn('cloud')) root.append(CloudUI.mediaCard());
-  root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '旅遊日誌 v12'));
+  root.append(el('div', { class: 'muted small', style: 'text-align:center' }, '旅遊日誌 v13'));
 }
 
 /* ---------- 啟動 ---------- */
